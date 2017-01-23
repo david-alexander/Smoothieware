@@ -64,6 +64,7 @@ struct websockets_state {
   char writeOpcode;
   uint64_t writePayloadLength;
   char writePayload[1024];
+  char isWaitingForCommandResponse;
 };
 
 struct httpd_state {
