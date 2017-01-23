@@ -39,6 +39,33 @@
 #include "httpd-fs.h"
 #include "stdio.h"
 
+#include "base64.h"
+#include "libsha1.h"
+
+enum websockets_stage {
+  Inactive, Negotiating, Established
+};
+
+struct websockets_header { // NOTE: This struct is not in wire format!
+  unsigned char fin;
+  unsigned char opcode;
+  unsigned char mask;
+  unsigned char payloadLength;
+};
+
+struct websockets_state {
+  enum websockets_stage stage;
+  char handshakeResponseKey[SHA1_DIGEST_SIZE];
+  unsigned int readBufferPos;
+  struct websockets_header readHeader;
+  uint64_t readPayloadLength;
+  char readMaskKey[4];
+  char hasOutputFrame;
+  char writeOpcode;
+  uint64_t writePayloadLength;
+  char writePayload[1024];
+};
+
 struct httpd_state {
   unsigned char timer;
   struct psock sin, sout;
@@ -60,6 +87,7 @@ struct httpd_state {
   void *pstream;
   void *fifo;
   uint16_t command_count;
+  struct websockets_state websocket;
 };
 
 #ifdef __cplusplus

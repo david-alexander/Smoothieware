@@ -98,6 +98,7 @@
 #define DEBUG_PRINTF printf
 //#define DEBUG_PRINTF(...)
 
+static struct httpd_state* all_websocket_connections[1024] = { 0 };
 
 // this callback gets the results of a command, line by line. need to check if
 // we need to stall the upstream sender return 0 if stalled 1 if ok to keep
@@ -199,6 +200,30 @@ static int fs_open(struct httpd_state *s)
     } else {
         s->fd = NULL;
         return httpd_fs_open(s->filename, &s->file);
+    }
+}
+
+static void add_websocket_connection(struct httpd_state* s)
+{
+    unsigned int i;
+    for (i = 0; all_websocket_connections[i] != NULL; i++);
+    all_websocket_connections[i] = s;
+    all_websocket_connections[i + 1] = NULL;
+}
+
+static void remove_websocket_connection(struct httpd_state* s)
+{
+    unsigned int i;
+    for (i = 0; all_websocket_connections[i] != NULL; i++)
+    {
+        if (all_websocket_connections[i] == s)
+        {
+            break;
+        }
+    }
+    for (; all_websocket_connections[i] != NULL; i++)
+    {
+        all_websocket_connections[i] = all_websocket_connections[i+1];
     }
 }
 
@@ -321,12 +346,159 @@ static PT_THREAD(send_headers(struct httpd_state *s, const char *statushdr))
     return send_headers_3(s, statushdr, 1);
 }
 /*---------------------------------------------------------------------------*/
+#define WEBSOCKET_HEADER_SIZE 2
+static void read_websocket_header(struct websockets_header* outHeader, char const* input)
+{
+    outHeader->fin = (input[0] >> 7) & 1;
+    outHeader->opcode = (input[0] >> 0) & 15;
+    outHeader->mask = (input[1] >> 7) & 1;
+    outHeader->payloadLength = (input[1] >> 0) & 127;
+}
+/*---------------------------------------------------------------------------*/
+static void write_websocket_header(char* output, struct websockets_header const* inHeader)
+{
+    output[0] = ((inHeader->fin & 1) << 7) | ((inHeader->opcode & 15) << 0);
+    output[1] = ((inHeader->mask & 1) << 7) | ((inHeader->payloadLength & 127) << 0);
+}
+/*---------------------------------------------------------------------------*/
+static
+PT_THREAD(send_websocket_frame(struct httpd_state *s))
+{
+    PSOCK_BEGIN(&s->sout);
+
+    if (s->websocket.hasOutputFrame)
+    {
+        struct websockets_header header;
+        header.fin = 1;
+        header.opcode = s->websocket.writeOpcode;
+        header.mask = 0;
+        header.payloadLength = s->websocket.writePayloadLength; // TEMP: Assume no extended payload length needed.
+        char headerBytes[WEBSOCKET_HEADER_SIZE];
+        write_websocket_header(headerBytes, &header);
+
+        char writeBuffer[1024];
+        memcpy(writeBuffer, headerBytes, WEBSOCKET_HEADER_SIZE);
+        memcpy(writeBuffer + WEBSOCKET_HEADER_SIZE, s->websocket.writePayload, s->websocket.writePayloadLength);
+        PSOCK_SEND(&s->sout, writeBuffer, WEBSOCKET_HEADER_SIZE + s->websocket.writePayloadLength);
+
+        s->websocket.hasOutputFrame = 0;
+    }
+
+    PSOCK_END(&s->sout);
+}
+/*---------------------------------------------------------------------------*/
+static
+PT_THREAD(handle_websocket_frame(struct httpd_state *s))
+{
+    PSOCK_BEGIN(&s->sin);
+
+    s->websocket.readBufferPos = 0;
+    s->websocket.readPayloadLength = 0;
+
+    PSOCK_READBUF_LEN(&s->sin, WEBSOCKET_HEADER_SIZE);
+    read_websocket_header(&s->websocket.readHeader, &s->inputbuf[s->websocket.readBufferPos]);
+    //s->websocket.readBufferPos += WEBSOCKET_HEADER_SIZE;
+
+    if (s->websocket.readHeader.payloadLength == 126)
+    {
+        PSOCK_READBUF_LEN(&s->sin, sizeof(uint16_t));
+        uint16_t* extendedPayloadLength = (uint16_t*)&s->inputbuf[s->websocket.readBufferPos];
+        //s->websocket.readBufferPos += sizeof(uint16_t);
+
+        s->websocket.readPayloadLength = *extendedPayloadLength;
+    }
+    else if (s->websocket.readHeader.payloadLength == 127)
+    {
+        PSOCK_READBUF_LEN(&s->sin, sizeof(uint64_t));
+        uint64_t* extendedPayloadLength = (uint64_t*)&s->inputbuf[s->websocket.readBufferPos];
+        //s->websocket.readBufferPos += sizeof(uint64_t);
+
+        s->websocket.readPayloadLength = *extendedPayloadLength;
+    }
+    else
+    {
+        s->websocket.readPayloadLength = s->websocket.readHeader.payloadLength;
+    }
+
+    if (s->websocket.readHeader.mask)
+    {
+        PSOCK_READBUF_LEN(&s->sin, 4);
+        memcpy(s->websocket.readMaskKey, &s->inputbuf[s->websocket.readBufferPos], 4);
+        //s->websocket.readBufferPos += 4;
+    }
+
+    PSOCK_READBUF_LEN(&s->sin, s->websocket.readPayloadLength);
+
+    unsigned int i;
+    for (i = 0; i < s->websocket.readPayloadLength; i++)
+    {
+        char* payloadByte = &s->inputbuf[s->websocket.readBufferPos + i];
+        char* keyByte = &s->websocket.readMaskKey[i % sizeof(s->websocket.readMaskKey)];
+        *payloadByte ^= *keyByte;
+    }
+
+    if (s->websocket.readHeader.opcode == 0x9) // ping
+    {
+        s->websocket.writeOpcode = 0xA; // pong
+        s->websocket.writePayloadLength = s->websocket.readPayloadLength;
+        memcpy(s->websocket.writePayload, &s->inputbuf[s->websocket.readBufferPos], s->websocket.readPayloadLength);
+        s->websocket.hasOutputFrame = 1;
+    }
+    else if (s->websocket.readHeader.opcode == 0x8) // connection close
+    {
+
+    }
+    else if (s->websocket.readHeader.opcode == 0x0) // continuation
+    {
+
+    }
+    else
+    {
+        for (i = 0; all_websocket_connections[i] != NULL; i++)
+        {
+            struct httpd_state* conn = all_websocket_connections[i];
+
+            conn->websocket.writeOpcode = s->websocket.readHeader.opcode;
+            conn->websocket.writePayloadLength = s->websocket.readPayloadLength;
+            memcpy(conn->websocket.writePayload, &s->inputbuf[s->websocket.readBufferPos], s->websocket.readPayloadLength);
+            conn->websocket.hasOutputFrame = 1;
+        }
+    }
+
+    PSOCK_END(&s->sin);
+}
+/*---------------------------------------------------------------------------*/
 static
 PT_THREAD(handle_output(struct httpd_state *s))
 {
     PT_BEGIN(&s->outputpt);
 
-    if (s->method == OPTIONS) {
+    if (s->websocket.stage == Negotiating) {
+        char handshakeResponseKeyBase64[29];
+        Base64encode(handshakeResponseKeyBase64, s->websocket.handshakeResponseKey, SHA1_DIGEST_SIZE);
+
+        PSOCK_BEGIN(&s->sout);
+
+        PSOCK_SEND_STR(&s->sout, http_websocket_handshake_response);
+        PSOCK_SEND_STR(&s->sout, handshakeResponseKeyBase64);
+        PSOCK_SEND_STR(&s->sout, "\r\n\r\n");
+
+        s->websocket.stage = Established;
+
+        add_websocket_connection(s);
+
+        PSOCK_END(&s->sout);
+    }
+    else if (s->websocket.stage == Established)
+    {
+        if (PSOCK_NEWDATA(&s->sin))
+        {
+            PT_WAIT_THREAD(&s->outputpt, handle_websocket_frame(s));
+        }
+
+        PT_WAIT_THREAD(&s->outputpt, send_websocket_frame(s));
+    }
+    else if (s->method == OPTIONS) {
         PT_WAIT_THREAD(&s->outputpt, send_headers(s, http_header_preflight));
         PSOCK_SEND_STR(&s->sout, "OK\r\n");
     }
@@ -392,7 +564,11 @@ PT_THREAD(handle_output(struct httpd_state *s))
         }
     }
 
-    PSOCK_CLOSE(&s->sout);
+    if (s->websocket.stage != Established)
+    {
+        PSOCK_CLOSE(&s->sout);
+    }
+
     PT_END(&s->outputpt);
 }
 
@@ -517,7 +693,11 @@ PT_THREAD(handle_input(struct httpd_state *s))
             s->inputbuf[PSOCK_DATALEN(&s->sin) - 1] = 0;
             if (s->inputbuf[0] == '\r') {
                 DEBUG_PRINTF("end of headers\n");
-                if (s->method == OPTIONS) {
+
+                if (s->websocket.stage == Negotiating)
+                {
+                    s->state = STATE_OUTPUT;
+                } else if (s->method == OPTIONS) {
                    s->state = STATE_OUTPUT;
                    break;
                 } else if (s->method == GET) {
@@ -547,6 +727,25 @@ PT_THREAD(handle_input(struct httpd_state *s))
                     s->inputbuf[PSOCK_DATALEN(&s->sin) - 2] = 0;
                     s->cache_page = strncmp(http_no_cache, &s->inputbuf[sizeof(http_cache_control) - 1], sizeof(http_no_cache) - 1) != 0;
                     DEBUG_PRINTF("cache page= %d\n", s->cache_page);
+                } else if (s->websocket.stage == Inactive && strncmp(s->inputbuf, http_sec_websocket_key, sizeof(http_sec_websocket_key) - 1) == 0) {
+                    s->inputbuf[PSOCK_DATALEN(&s->sin) - 2] = 0;
+
+                    static const int expectedKeyLength = 24;
+
+                    char const* key = &s->inputbuf[sizeof(http_sec_websocket_key) - 1];
+                    int keyLength = PSOCK_DATALEN(&s->sin) - sizeof(http_sec_websocket_key) - 1;
+
+                    if (keyLength == expectedKeyLength)
+                    {
+                        sha1_ctx ctx;
+
+                        sha1_begin(&ctx);
+                        sha1_hash((unsigned char const*)key, expectedKeyLength, &ctx);
+                        sha1_hash((unsigned char const*)http_websockets_magic, sizeof(http_websockets_magic) - 1, &ctx);
+                        sha1_end((unsigned char*)s->websocket.handshakeResponseKey, &ctx);
+
+                        s->websocket.stage = Negotiating;
+                    }
                 }
             }
 
@@ -640,6 +839,8 @@ httpd_appcall(void)
         s->strbuf = NULL;
         s->fifo = NULL;
         s->pstream = NULL;
+        s->websocket.stage = Inactive;
+        s->websocket.hasOutputFrame = 0;
     }
 
     if (s == NULL) {
@@ -649,17 +850,24 @@ httpd_appcall(void)
     }
 
     // check for timeout on connection here so we can cleanup if we abort
-    if (uip_poll()) {
-        ++s->timer;
-        if (s->timer >= 20 * 2) { // we have a 0.5 second poll and we want 20 second timeout
-            DEBUG_PRINTF("Timer expired, aborting\n");
-            uip_abort();
+    if (s->websocket.stage != Established)
+    {
+        if (uip_poll()) {
+            ++s->timer;
+            if (s->timer >= 20 * 2) { // we have a 0.5 second poll and we want 20 second timeout
+                DEBUG_PRINTF("Timer expired, aborting\n");
+                uip_abort();
+            }
+        } else {
+            s->timer = 0;
         }
-    } else {
-        s->timer = 0;
     }
 
     if (uip_closed() || uip_aborted() || uip_timedout()) {
+        if (s->websocket.stage == Established)
+        {
+            remove_websocket_connection(s);
+        }
         DEBUG_PRINTF("Closing connection: %d\n", HTONS(uip_conn->rport));
         if (s->fd != NULL) fclose(fd); // clean up
         if (s->strbuf != NULL) free(s->strbuf);

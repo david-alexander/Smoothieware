@@ -1,0 +1,55 @@
+<html>
+	<head>
+		<title>WebSockets Chat</title>
+	</head>
+	<body>
+		<div id="messages" style="height: 75vh; width: 90vw; overflow: scroll;"></div>
+		<input id="message" style="width: 85vw;" placeholder="Type a message here" disabled>
+		<button id="sendButton" style="width: 5vw" disabled>Send!</button>
+
+		<script>
+			window.onload = function() {
+				var socket = new WebSocket("ws://" + window.location.host);
+
+				var messagesDiv = document.getElementById("messages");
+				var messageInput = document.getElementById("message");
+				var sendButton = document.getElementById("sendButton");
+
+				function send()
+				{
+					var message = messageInput.value;
+					messageInput.value = "";
+					socket.send(message);
+				}
+
+				function receive(message)
+				{
+					var messageDiv = document.createElement("div");
+					messageDiv.innerHTML = message;
+					messagesDiv.appendChild(messageDiv);
+					messagesDiv.scrollTop = messagesDiv.scrollHeight;
+				}
+
+				sendButton.addEventListener("click", function() {
+					send();
+				});
+
+				messageInput.addEventListener("keyup", function(e) {
+					if (e.keyCode == 13)
+					{
+						send();
+					}
+				});
+
+				socket.onopen = function (event) {
+					messageInput.disabled = false;
+					sendButton.disabled = false;
+				};
+
+				socket.onmessage = function (event) {
+					receive(event.data);
+				};
+			};
+		</script>
+	</body>
+</html>
