@@ -88,7 +88,11 @@ Z:<input type="text" id="z_velocity" size=3 value=200 style="width:40px">
             <path class="home" d="M15,3 v2.8 l1,.8 v-3.6 z"/>
         </symbol>
 
-        <symbol id="JogRose" viewBox="20 -10 260 260">
+    </defs>
+
+    <g>
+        <g>
+
             <g id="HomeAll" onmouseup="runCommandSilent('G28')">
                 <path class="std" d="M10 182.5 h-10 v57.5 h57.5 v-10 a 125,125 0 0,1 -47.5 -47.5 Z" fill="#f0f0f0">
                     <set attributeName="fill" to="orange" begin="mouseover" end="mouseout"/>
@@ -234,11 +238,8 @@ Z:<input type="text" id="z_velocity" size=3 value=200 style="width:40px">
                 <text x="27" y="124"> -X </text>
                 <text x="196" y="124"> +X </text>
             </g>
-
-        </symbol>
-
-        <symbol id="JogBar" viewBox="20 -10 260 260">
-            <desc>JogBar - Z jogging bar</desc>
+        </g>
+        <g transform="translate(260 0)">
             <g id="+Z" fill="#b0b0b0">
                 <path class="std" d=" M5,0 h30 a5,5 0 0,1 5,5 v27 h-40 v-27 a5,5 0 0,1 5,-5 z"/>
                 <path class="std" d="M20,2 l17,17 h-10 v11 h-14 v-11 h-10 z" fill="DarkSeaGreen"/>
@@ -288,16 +289,8 @@ Z:<input type="text" id="z_velocity" size=3 value=200 style="width:40px">
             <g id="ZSpace" fill="#000000">
                 <rect class="std" x="0" y="112" width="40" height="16"/>
             </g>
-        </symbol>
-
-        <symbol id="PrinterCtl">
-            <use x="0" y="0" xlink:href="#JogRose"/>
-            <use x="260" y="0" xlink:href="#JogBar"/>
-        </symbol>
-
-    </defs>
-
-    <use x="0" y="0" xlink:href="#PrinterCtl"/>
+        </g>
+    </g>
 
   </svg>
 
