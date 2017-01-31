@@ -27,50 +27,38 @@
  * SUCH DAMAGE.
  *
  * This file is part of the uIP TCP/IP stack
- *
- * @(#)$Id: dhcpc.h,v 1.3 2006/06/11 21:46:37 adam Exp $
  */
-#ifndef __DHCPC_H__
-#define __DHCPC_H__
+#ifndef __MDNS_H__
+#define __MDNS_H__
 
 #include "timer.h"
 #include "pt.h"
+#include "stdlib.h"
 
-#define DHCPC_SERVER_PORT  67
-#define DHCPC_CLIENT_PORT  68
+#define MDNS_PORT 5353
 
-struct dhcpc_state {
+struct mdns_state {
   struct pt pt;
-  char state;
-  struct uip_udp_conn *conn;
-  struct timer timer;
-  u16_t ticks;
-  const void *mac_addr;
-  int mac_len;
-  char *hostname;
-  u8_t serverid[4];
-
-  uint32_t lease_time;
-  uint32_t ipaddr;
-  uint32_t netmask;
-  uint32_t dnsaddr;
-  uint32_t default_router;
+  struct uip_udp_conn *conn_recv;
+  struct uip_udp_conn *conn_send;
+  char* hostname;
+  size_t hostname_len;
+  char send_response;
+  const char* response_packet;
+  size_t response_packet_len;
 };
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-void dhcpc_init(const void *mac_addr, int mac_len, char *hostname);
-void dhcpc_request(void);
+void mdns_init(const void *mac_addr, int mac_len, char *hostname);
 
-void dhcpc_appcall(void);
-
-void dhcpc_configured(const struct dhcpc_state *s);
+void mdns_appcall();
 
 #ifdef __cplusplus
 }
 #endif
 
 
-#endif /* __DHCPC_H__ */
+#endif /* __MDNS_H__ */

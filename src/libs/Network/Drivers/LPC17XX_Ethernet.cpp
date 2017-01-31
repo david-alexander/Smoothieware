@@ -357,7 +357,7 @@ void LPC17XX_Ethernet::emac_init()
     LPC_EMAC->TxDescriptorNumber = LPC17XX_TXBUFS-1;
 
     // Set Receive Filter register: enable broadcast and multicast
-    LPC_EMAC->RxFilterCtrl = EMAC_RFC_BCAST_EN | EMAC_RFC_PERFECT_EN;
+    LPC_EMAC->RxFilterCtrl = EMAC_RFC_BCAST_EN | EMAC_RFC_MCAST_EN | EMAC_RFC_PERFECT_EN;
 
     /* Enable Rx Done and Tx Done interrupt for EMAC */
     LPC_EMAC->IntEnable = EMAC_INT_RX_DONE | EMAC_INT_TX_DONE;

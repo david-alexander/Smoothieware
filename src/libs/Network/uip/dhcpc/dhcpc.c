@@ -74,9 +74,6 @@ struct dhcp_msg {
 #define DHCP_HLEN_ETHERNET  6
 #define DHCP_MSG_LEN      236
 
-#define DHCPC_SERVER_PORT  67
-#define DHCPC_CLIENT_PORT  68
-
 #define DHCPDISCOVER  1
 #define DHCPOFFER     2
 #define DHCPREQUEST   3

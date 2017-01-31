@@ -152,13 +152,22 @@ extern void app_select_appcall(void);
 #define UIP_APPCALL app_select_appcall
 typedef void* uip_tcp_appstate_t;
 
+#ifdef __cplusplus
+extern "C" void app_select_appcall_udp(void);
+#else
+extern void app_select_appcall_udp(void);
+#endif
+
+#define UIP_UDP_APPCALL app_select_appcall_udp
+typedef void* uip_udp_appstate_t;
+
 /* Here we include the header file for the application(s) we use in
    our project. */
 /*#include "smtp.h"*/
 //#include "hello-world.h"
 // #include "telnetd.h"
 // #include "webserver.h"
-#include "dhcpc.h"
+// #include "dhcpc.h"
 /*#include "resolv.h"*/
 /*#include "webclient.h"*/
 
