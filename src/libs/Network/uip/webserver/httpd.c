@@ -82,6 +82,7 @@
 #define STATE_BODY    2
 #define STATE_OUTPUT  3
 #define STATE_UPLOAD  4
+#define STATE_WEBSOCKETS  5
 
 #define GET     1
 #define POST    2
@@ -243,46 +244,26 @@ static void write_websocket_header(char* output, struct websockets_header const*
     output[1] = ((inHeader->mask & 1) << 7) | ((inHeader->payloadLength & 127) << 0);
 }
 /*---------------------------------------------------------------------------*/
-static
-PT_THREAD(send_websocket_frame(struct httpd_state *s))
+static void prepare_websocket_frame(struct httpd_state *s, char* writeBuffer, char opcode, char* payload, uint64_t payloadLength)
 {
-    PSOCK_BEGIN(&s->sout);
+    struct websockets_header header;
+    header.fin = 1;
+    header.opcode = opcode;
+    header.mask = 0;
+    header.payloadLength = payloadLength; // TEMP: Assume no extended payload length needed.
+    char headerBytes[WEBSOCKET_HEADER_SIZE];
+    write_websocket_header(headerBytes, &header);
 
-    if (s->websocket.hasOutputFrame)
-    {
-        struct websockets_header header;
-        header.fin = 1;
-        header.opcode = s->websocket.writeOpcode;
-        header.mask = 0;
-        header.payloadLength = s->websocket.writePayloadLength; // TEMP: Assume no extended payload length needed.
-        char headerBytes[WEBSOCKET_HEADER_SIZE];
-        write_websocket_header(headerBytes, &header);
-
-        char writeBuffer[1024];
-        memcpy(writeBuffer, headerBytes, WEBSOCKET_HEADER_SIZE);
-        memcpy(writeBuffer + WEBSOCKET_HEADER_SIZE, s->websocket.writePayload, s->websocket.writePayloadLength);
-        PSOCK_SEND(&s->sout, writeBuffer, WEBSOCKET_HEADER_SIZE + s->websocket.writePayloadLength);
-
-        s->websocket.hasOutputFrame = 0;
-    }
-
-    PSOCK_END(&s->sout);
+    memcpy(writeBuffer, headerBytes, WEBSOCKET_HEADER_SIZE);
+    memcpy(writeBuffer + WEBSOCKET_HEADER_SIZE, payload, payloadLength);
 }
 
-/*---------------------------------------------------------------------------*/
-static void websocket_send_to_all(struct httpd_state *s, char opcode, char const* payload, uint64_t payloadLength)
-{
-    int i;
-    for (i = 0; all_websocket_connections[i] != NULL; i++)
-    {
-        struct httpd_state* conn = all_websocket_connections[i];
+#define SEND_WEBSOCKET_FRAME(s, opcode, payload, payloadLength) do { \
+    char writeBuffer[1024]; \
+    prepare_websocket_frame(s, writeBuffer, opcode, payload, payloadLength); \
+    PSOCK_SEND(&s->sout, writeBuffer, WEBSOCKET_HEADER_SIZE + payloadLength); \
+} while(0);
 
-        conn->websocket.writeOpcode = opcode;
-        conn->websocket.writePayloadLength = payloadLength;
-        memcpy(conn->websocket.writePayload, payload, payloadLength);
-        conn->websocket.hasOutputFrame = 1;
-    }
-}
 /*---------------------------------------------------------------------------*/
 static PT_THREAD(send_command_response(struct httpd_state *s))
 {
@@ -297,9 +278,7 @@ static PT_THREAD(send_command_response(struct httpd_state *s))
             // TODO send as much as we can in one packet
             if (s->websocket.stage == Established)
             {
-                websocket_send_to_all(s, 1, s->strbuf, strlen(s->strbuf));
-
-                PT_WAIT_THREAD(&s->outputpt, send_websocket_frame(s));
+                SEND_WEBSOCKET_FRAME(s, 1, s->strbuf, strlen(s->strbuf));
             }
             else
             {
@@ -463,10 +442,7 @@ PT_THREAD(handle_websocket_frame(struct httpd_state *s))
 
     if (s->websocket.readHeader.opcode == 0x9) // ping
     {
-        s->websocket.writeOpcode = 0xA; // pong
-        s->websocket.writePayloadLength = s->websocket.readPayloadLength;
-        memcpy(s->websocket.writePayload, &s->inputbuf[s->websocket.readBufferPos], s->websocket.readPayloadLength);
-        s->websocket.hasOutputFrame = 1;
+        SEND_WEBSOCKET_FRAME(s, 0xA /* pong */, &s->inputbuf[s->websocket.readBufferPos], s->websocket.readPayloadLength);
     }
     else if (s->websocket.readHeader.opcode == 0x8) // connection close
     {
@@ -478,12 +454,9 @@ PT_THREAD(handle_websocket_frame(struct httpd_state *s))
     }
     else
     {
-        websocket_send_to_all(s, s->websocket.readHeader.opcode, &s->inputbuf[s->websocket.readBufferPos], s->websocket.readPayloadLength);
-
         s->inputbuf[s->websocket.readBufferPos + s->websocket.readPayloadLength] = '\0';
         network_add_command(&s->inputbuf[s->websocket.readBufferPos], s->pstream);
         s->command_count++;
-        s->websocket.isWaitingForCommandResponse = 1;
     }
 
     PSOCK_END(&s->sin);
@@ -505,6 +478,7 @@ PT_THREAD(handle_output(struct httpd_state *s))
         PSOCK_SEND_STR(&s->sout, "\r\n\r\n");
 
         s->websocket.stage = Established;
+        s->state = STATE_WEBSOCKETS;
         s->command_count = 0;
 
         add_websocket_connection(s);
@@ -514,19 +488,9 @@ PT_THREAD(handle_output(struct httpd_state *s))
     }
     else if (s->websocket.stage == Established)
     {
-        if (s->websocket.isWaitingForCommandResponse)
+        if (s->command_count > 0)
         {
             PT_WAIT_THREAD(&s->outputpt, send_command_response(s));
-            s->websocket.isWaitingForCommandResponse = 0;
-        }
-        else
-        {
-            if (PSOCK_NEWDATA(&s->sin))
-            {
-                PT_WAIT_THREAD(&s->outputpt, handle_websocket_frame(s));
-            }
-
-            PT_WAIT_THREAD(&s->outputpt, send_websocket_frame(s));
         }
     }
     else if (s->method == OPTIONS) {
@@ -682,150 +646,161 @@ PT_THREAD(handle_input(struct httpd_state *s))
 {
     PSOCK_BEGIN(&s->sin);
 
-    PSOCK_READTO(&s->sin, ISO_space);
-
-    if (strncmp(s->inputbuf, http_get, 3) == 0) {
-        s->method = GET;
-    } else if (strncmp(s->inputbuf, http_post, 4) == 0) {
-        s->method = POST;
-    } else if (strncmp(s->inputbuf, http_options, 7) == 0) {
-        s->method = OPTIONS;
-    } else {
-        DEBUG_PRINTF("Unexpected method: %s\n", s->inputbuf);
-        PSOCK_CLOSE_EXIT(&s->sin);
-    }
-
-    DEBUG_PRINTF("Method: %s\n", s->method == POST ? "POST" : (s->method == GET ? "GET" : "OPTIONS"));
-
-    PSOCK_READTO(&s->sin, ISO_space);
-
-    if (s->inputbuf[0] != ISO_slash) {
-        PSOCK_CLOSE_EXIT(&s->sin);
-    }
-
-    if (s->inputbuf[1] == ISO_space) {
-        strncpy(s->filename, http_index_html, sizeof(s->filename));
-    } else {
-        s->inputbuf[PSOCK_DATALEN(&s->sin) - 1] = 0;
-        strncpy(s->filename, &s->inputbuf[0], sizeof(s->filename));
-    }
-
-    DEBUG_PRINTF("filename: %s\n", s->filename);
-
-    /*  httpd_log_file(uip_conn->ripaddr, s->filename);*/
-
-    s->state = STATE_HEADERS;
-    s->content_length = 0;
-    s->cache_page = 0;
-    while (1) {
-        if (s->state == STATE_HEADERS) {
-            // read the headers of the request
-            PSOCK_READTO(&s->sin, ISO_nl);
-            s->inputbuf[PSOCK_DATALEN(&s->sin) - 1] = 0;
-            if (s->inputbuf[0] == '\r') {
-                DEBUG_PRINTF("end of headers\n");
-
-                if (s->websocket.stage == Negotiating)
-                {
-                    s->state = STATE_OUTPUT;
-                } else if (s->method == OPTIONS) {
-                   s->state = STATE_OUTPUT;
-                   break;
-                } else if (s->method == GET) {
-                    s->state = STATE_OUTPUT;
-                    break;
-                } else if (s->method == POST) {
-                    if (strcmp(s->filename, "/upload") == 0) {
-                        s->state = STATE_UPLOAD;
-                    } else {
-                        s->state = STATE_BODY;
-                    }
-                }
-            } else {
-                DEBUG_PRINTF("reading header: %s\n", s->inputbuf);
-                // handle headers here
-                if (strncmp(s->inputbuf, http_content_length, sizeof(http_content_length) - 1) == 0) {
-                    s->inputbuf[PSOCK_DATALEN(&s->sin) - 2] = 0;
-                    s->content_length = atoi(&s->inputbuf[sizeof(http_content_length) - 1]);
-                    DEBUG_PRINTF("Content length= %s, %d\n", &s->inputbuf[sizeof(http_content_length) - 1], s->content_length);
-
-                } else if (strncmp(s->inputbuf, "X-Filename: ", 11) == 0) {
-                    s->inputbuf[PSOCK_DATALEN(&s->sin) - 2] = 0;
-                    strncpy(s->upload_name, &s->inputbuf[12], sizeof(s->upload_name) - 1);
-                    DEBUG_PRINTF("Upload name= %s\n", s->upload_name);
-
-                } else if (strncmp(s->inputbuf, http_cache_control, sizeof(http_cache_control) - 1) == 0) {
-                    s->inputbuf[PSOCK_DATALEN(&s->sin) - 2] = 0;
-                    s->cache_page = strncmp(http_no_cache, &s->inputbuf[sizeof(http_cache_control) - 1], sizeof(http_no_cache) - 1) != 0;
-                    DEBUG_PRINTF("cache page= %d\n", s->cache_page);
-                } else if (s->websocket.stage == Inactive && strncmp(s->inputbuf, http_sec_websocket_key, sizeof(http_sec_websocket_key) - 1) == 0) {
-                    s->inputbuf[PSOCK_DATALEN(&s->sin) - 2] = 0;
-
-                    static const int expectedKeyLength = 24;
-
-                    char const* key = &s->inputbuf[sizeof(http_sec_websocket_key) - 1];
-                    int keyLength = PSOCK_DATALEN(&s->sin) - sizeof(http_sec_websocket_key) - 1;
-
-                    if (keyLength == expectedKeyLength)
-                    {
-                        sha1_ctx ctx;
-
-                        sha1_begin(&ctx);
-                        sha1_hash((unsigned char const*)key, expectedKeyLength, &ctx);
-                        sha1_hash((unsigned char const*)http_websockets_magic, sizeof(http_websockets_magic) - 1, &ctx);
-                        sha1_end((unsigned char*)s->websocket.handshakeResponseKey, &ctx);
-
-                        s->websocket.stage = Negotiating;
-                    }
-                }
-            }
-
-        } else if (s->state == STATE_BODY) {
-            if (s->method == POST && strcmp(s->filename, "/command") == 0) {
-                // create a callback stream and fifo for the results as it is a command
-                create_callback_stream(s);
-
-            } else if (s->method == POST && strcmp(s->filename, "/command_silent") == 0) {
-                // stick the command  on the command queue specifying null output stream
-                s->pstream = NULL;
-
-            } else { // unknown POST
-                DEBUG_PRINTF("Unknown Post URL: %s\n", s->filename);
-                s->state = STATE_OUTPUT;
-                break;
-            }
-            s->command_count= 0;
-            // read the Body of the request, each line is a command
-            if (s->content_length > 0) {
-                DEBUG_PRINTF("start reading body %d...\n", s->content_length);
-                while (s->content_length > 2) {
-                    PSOCK_READTO(&s->sin, ISO_nl);
-                    s->inputbuf[PSOCK_DATALEN(&s->sin) - 1] = 0;
-                    s->content_length -= PSOCK_DATALEN(&s->sin);
-                    // stick the command  on the command queue, with this connections stream output
-                    DEBUG_PRINTF("Adding command: %s, left: %d\n", s->inputbuf, s->content_length);
-                    network_add_command(s->inputbuf, s->pstream);
-                    s->command_count++; // count number of command lines we submit
-                }
-                DEBUG_PRINTF("Read body done\n");
-                s->state = STATE_OUTPUT;
-
-            } else {
-                s->state = STATE_OUTPUT;
-            }
-            break;
-
-        } else if (s->state == STATE_UPLOAD) {
-            PSOCK_WAIT_THREAD(&s->sin, handle_uploaded_data(s, PSOCK_GET_START_OF_REST_OF_BUFFER(&s->sin), PSOCK_GET_LENGTH_OF_REST_OF_BUFFER(&s->sin)));
-            PSOCK_MARK_BUFFER_READ(&s->sin);
-            s->state = STATE_OUTPUT;
-            break;
-
-        } else {
-            DEBUG_PRINTF("WTF State: %d", s->state);
-            break;
+	if (s->websocket.stage == Established)
+	{
+        if (PSOCK_NEWDATA(&s->sin))
+        {
+            PT_WAIT_THREAD(&s->inputpt, handle_websocket_frame(s));
         }
     }
+    else
+    {
+
+	    PSOCK_READTO(&s->sin, ISO_space);
+
+	    if (strncmp(s->inputbuf, http_get, 3) == 0) {
+	        s->method = GET;
+	    } else if (strncmp(s->inputbuf, http_post, 4) == 0) {
+	        s->method = POST;
+	    } else if (strncmp(s->inputbuf, http_options, 7) == 0) {
+	        s->method = OPTIONS;
+	    } else {
+	        DEBUG_PRINTF("Unexpected method: %s\n", s->inputbuf);
+	        PSOCK_CLOSE_EXIT(&s->sin);
+	    }
+
+	    DEBUG_PRINTF("Method: %s\n", s->method == POST ? "POST" : (s->method == GET ? "GET" : "OPTIONS"));
+
+	    PSOCK_READTO(&s->sin, ISO_space);
+
+	    if (s->inputbuf[0] != ISO_slash) {
+	        PSOCK_CLOSE_EXIT(&s->sin);
+	    }
+
+	    if (s->inputbuf[1] == ISO_space) {
+	        strncpy(s->filename, http_index_html, sizeof(s->filename));
+	    } else {
+	        s->inputbuf[PSOCK_DATALEN(&s->sin) - 1] = 0;
+	        strncpy(s->filename, &s->inputbuf[0], sizeof(s->filename));
+	    }
+
+	    DEBUG_PRINTF("filename: %s\n", s->filename);
+
+	    /*  httpd_log_file(uip_conn->ripaddr, s->filename);*/
+
+	    s->state = STATE_HEADERS;
+	    s->content_length = 0;
+	    s->cache_page = 0;
+	    while (1) {
+	        if (s->state == STATE_HEADERS) {
+	            // read the headers of the request
+	            PSOCK_READTO(&s->sin, ISO_nl);
+	            s->inputbuf[PSOCK_DATALEN(&s->sin) - 1] = 0;
+	            if (s->inputbuf[0] == '\r') {
+	                DEBUG_PRINTF("end of headers\n");
+
+	                if (s->websocket.stage == Negotiating)
+	                {
+	                    s->state = STATE_OUTPUT;
+	                } else if (s->method == OPTIONS) {
+	                   s->state = STATE_OUTPUT;
+	                   break;
+	                } else if (s->method == GET) {
+	                    s->state = STATE_OUTPUT;
+	                    break;
+	                } else if (s->method == POST) {
+	                    if (strcmp(s->filename, "/upload") == 0) {
+	                        s->state = STATE_UPLOAD;
+	                    } else {
+	                        s->state = STATE_BODY;
+	                    }
+	                }
+	            } else {
+	                DEBUG_PRINTF("reading header: %s\n", s->inputbuf);
+	                // handle headers here
+	                if (strncmp(s->inputbuf, http_content_length, sizeof(http_content_length) - 1) == 0) {
+	                    s->inputbuf[PSOCK_DATALEN(&s->sin) - 2] = 0;
+	                    s->content_length = atoi(&s->inputbuf[sizeof(http_content_length) - 1]);
+	                    DEBUG_PRINTF("Content length= %s, %d\n", &s->inputbuf[sizeof(http_content_length) - 1], s->content_length);
+
+	                } else if (strncmp(s->inputbuf, "X-Filename: ", 11) == 0) {
+	                    s->inputbuf[PSOCK_DATALEN(&s->sin) - 2] = 0;
+	                    strncpy(s->upload_name, &s->inputbuf[12], sizeof(s->upload_name) - 1);
+	                    DEBUG_PRINTF("Upload name= %s\n", s->upload_name);
+
+	                } else if (strncmp(s->inputbuf, http_cache_control, sizeof(http_cache_control) - 1) == 0) {
+	                    s->inputbuf[PSOCK_DATALEN(&s->sin) - 2] = 0;
+	                    s->cache_page = strncmp(http_no_cache, &s->inputbuf[sizeof(http_cache_control) - 1], sizeof(http_no_cache) - 1) != 0;
+	                    DEBUG_PRINTF("cache page= %d\n", s->cache_page);
+	                } else if (s->websocket.stage == Inactive && strncmp(s->inputbuf, http_sec_websocket_key, sizeof(http_sec_websocket_key) - 1) == 0) {
+	                    s->inputbuf[PSOCK_DATALEN(&s->sin) - 2] = 0;
+
+	                    static const int expectedKeyLength = 24;
+
+	                    char const* key = &s->inputbuf[sizeof(http_sec_websocket_key) - 1];
+	                    int keyLength = PSOCK_DATALEN(&s->sin) - sizeof(http_sec_websocket_key) - 1;
+
+	                    if (keyLength == expectedKeyLength)
+	                    {
+	                        sha1_ctx ctx;
+
+	                        sha1_begin(&ctx);
+	                        sha1_hash((unsigned char const*)key, expectedKeyLength, &ctx);
+	                        sha1_hash((unsigned char const*)http_websockets_magic, sizeof(http_websockets_magic) - 1, &ctx);
+	                        sha1_end((unsigned char*)s->websocket.handshakeResponseKey, &ctx);
+
+	                        s->websocket.stage = Negotiating;
+	                    }
+	                }
+	            }
+
+	        } else if (s->state == STATE_BODY) {
+	            if (s->method == POST && strcmp(s->filename, "/command") == 0) {
+	                // create a callback stream and fifo for the results as it is a command
+	                create_callback_stream(s);
+
+	            } else if (s->method == POST && strcmp(s->filename, "/command_silent") == 0) {
+	                // stick the command  on the command queue specifying null output stream
+	                s->pstream = NULL;
+
+	            } else { // unknown POST
+	                DEBUG_PRINTF("Unknown Post URL: %s\n", s->filename);
+	                s->state = STATE_OUTPUT;
+	                break;
+	            }
+	            s->command_count= 0;
+	            // read the Body of the request, each line is a command
+	            if (s->content_length > 0) {
+	                DEBUG_PRINTF("start reading body %d...\n", s->content_length);
+	                while (s->content_length > 2) {
+	                    PSOCK_READTO(&s->sin, ISO_nl);
+	                    s->inputbuf[PSOCK_DATALEN(&s->sin) - 1] = 0;
+	                    s->content_length -= PSOCK_DATALEN(&s->sin);
+	                    // stick the command  on the command queue, with this connections stream output
+	                    DEBUG_PRINTF("Adding command: %s, left: %d\n", s->inputbuf, s->content_length);
+	                    network_add_command(s->inputbuf, s->pstream);
+	                    s->command_count++; // count number of command lines we submit
+	                }
+	                DEBUG_PRINTF("Read body done\n");
+	                s->state = STATE_OUTPUT;
+
+	            } else {
+	                s->state = STATE_OUTPUT;
+	            }
+	            break;
+
+	        } else if (s->state == STATE_UPLOAD) {
+	            PSOCK_WAIT_THREAD(&s->sin, handle_uploaded_data(s, PSOCK_GET_START_OF_REST_OF_BUFFER(&s->sin), PSOCK_GET_LENGTH_OF_REST_OF_BUFFER(&s->sin)));
+	            PSOCK_MARK_BUFFER_READ(&s->sin);
+	            s->state = STATE_OUTPUT;
+	            break;
+
+	        } else {
+	            DEBUG_PRINTF("WTF State: %d", s->state);
+	            break;
+	        }
+	    }
+	}
 
     PSOCK_END(&s->sin);
 }
@@ -836,7 +811,7 @@ handle_connection(struct httpd_state *s)
     if (s->state != STATE_OUTPUT) {
         handle_input(s);
     }
-    if (s->state == STATE_OUTPUT) {
+    if (s->state == STATE_OUTPUT || s->state == STATE_WEBSOCKETS) {
         handle_output(s);
     }
 }
@@ -871,8 +846,6 @@ httpd_appcall(void)
         s->fifo = NULL;
         s->pstream = NULL;
         s->websocket.stage = Inactive;
-        s->websocket.hasOutputFrame = 0;
-        s->websocket.isWaitingForCommandResponse = 0;
     }
 
     if (s == NULL) {

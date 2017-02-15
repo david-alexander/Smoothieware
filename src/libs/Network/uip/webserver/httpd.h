@@ -60,11 +60,6 @@ struct websockets_state {
   struct websockets_header readHeader;
   uint64_t readPayloadLength;
   char readMaskKey[4];
-  char hasOutputFrame;
-  char writeOpcode;
-  uint64_t writePayloadLength;
-  char writePayload[1024];
-  char isWaitingForCommandResponse;
 };
 
 struct httpd_state {
