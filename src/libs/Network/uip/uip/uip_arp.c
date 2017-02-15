@@ -109,7 +109,10 @@ struct arp_entry {
 
 static const struct uip_eth_addr broadcast_ethaddr =
   {{0xff,0xff,0xff,0xff,0xff,0xff}};
+static const struct uip_eth_addr mdns_multicast_ethaddr =
+  {{0x01,0x00,0x5e,0x00,0x00,0xfb}};
 static const u16_t broadcast_ipaddr[2] = {0xffff,0xffff};
+static const u16_t mdns_multicast_ipaddr[2] = {0x00e0,0xfb00};
 
 static struct arp_entry arp_table[UIP_ARPTAB_SIZE]  __attribute__ ((section ("AHBSRAM1")));
 static u16_t ipaddr[2];
@@ -367,9 +370,11 @@ uip_arp_out(void)
      If not ARP table entry is found, we overwrite the original IP
      packet with an ARP request for the IP address. */
 
-  /* First check if destination is a local broadcast. */
+  /* First check if destination is a local broadcast or multicast. */
   if(uip_ipaddr_cmp(IPBUF->destipaddr, broadcast_ipaddr)) {
     memcpy(IPBUF->ethhdr.dest.addr, broadcast_ethaddr.addr, 6);
+  } else if (uip_ipaddr_cmp(IPBUF->destipaddr, mdns_multicast_ipaddr)) {
+    memcpy(IPBUF->ethhdr.dest.addr, mdns_multicast_ethaddr.addr, 6);
   } else {
     /* Check if the destination address is on the local network. */
     if(!uip_ipaddr_maskcmp(IPBUF->destipaddr, uip_hostaddr, uip_netmask)) {

@@ -22,6 +22,7 @@
 #include "telnetd.h"
 #include "webserver.h"
 #include "dhcpc.h"
+#include "mdns.h"
 #include "sftpd.h"
 
 #ifndef NOPLAN9
@@ -114,7 +115,7 @@ static bool parse_hostname(const string &s)
         if(!(c >= 'a' && c <= 'z')
                 && !(c >= 'A' && c <= 'Z')
                 && !(i != 0 && c >= '0' && c <= '9')
-                && !(i != 0 && i != str_len - 1 && c == '-')){
+                && !(i != 0 && i != str_len - 1 && (c == '-' || c == '.'))){
             return false;
         }
     }
@@ -156,15 +157,6 @@ void Network::on_module_loaded()
     string s = THEKERNEL->config->value( network_checksum, network_ip_address_checksum )->by_default("auto")->as_string();
     if (s == "auto") {
         use_dhcp = true;
-        s = THEKERNEL->config->value( network_checksum, network_hostname_checksum )->as_string();
-        if (!s.empty()) {
-            if(parse_hostname(s)){
-                hostname = new char [s.length() + 1];
-                strcpy(hostname, s.c_str());
-            }else{
-                printf("Invalid hostname: %s\n", s.c_str());
-            }
-        }
     } else {
         bool bad = false;
         use_dhcp = false;
@@ -187,6 +179,18 @@ void Network::on_module_loaded()
             return;
         }
     }
+
+    s = THEKERNEL->config->value( network_checksum, network_hostname_checksum )->as_string();
+    if (!s.empty()) {
+        if(parse_hostname(s)){
+            hostname = new char [s.length() + 1];
+            strcpy(hostname, s.c_str());
+        }else{
+            printf("Invalid hostname: %s\n", s.c_str());
+        }
+    }
+
+    use_mdns = true;
 
     THEKERNEL->add_module( ethernet );
     THEKERNEL->slow_ticker->attach( 100, this, &Network::tick );
@@ -375,13 +379,17 @@ void Network::init(void)
         uip_setnetmask(tip); /* mask */
         printf("IP mask: %d.%d.%d.%d\n", ipmask[0], ipmask[1], ipmask[2], ipmask[3]);
         setup_servers();
-
     }else{
     #if UIP_CONF_UDP
         dhcpc_init(mac_address, sizeof(mac_address), hostname);
         dhcpc_request();
         printf("Getting IP address....\n");
     #endif
+    }
+
+    if (use_mdns)
+    {
+        mdns_init(mac_address, sizeof(mac_address), hostname);
     }
 }
 
@@ -422,6 +430,23 @@ extern "C" void app_select_appcall(void)
 
         default:
             printf("unknown app for port: %d\n", uip_conn->lport);
+
+    }
+}
+
+extern "C" void app_select_appcall_udp(void)
+{
+    switch (uip_udp_conn->lport) {
+        case HTONS(DHCPC_CLIENT_PORT):
+            if (theNetwork->use_dhcp) dhcpc_appcall();
+            break;
+
+        case HTONS(MDNS_PORT):
+            if (theNetwork->use_mdns) mdns_appcall();
+            break;
+
+        default:
+            printf("unknown app for UDP port: %d\n", uip_udp_conn->lport);
 
     }
 }

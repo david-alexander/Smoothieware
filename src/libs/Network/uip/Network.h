@@ -28,6 +28,7 @@ public:
         bool telnet_enabled:1;
         bool plan9_enabled:1;
         bool use_dhcp:1;
+        bool use_mdns:1;
     };
 
 

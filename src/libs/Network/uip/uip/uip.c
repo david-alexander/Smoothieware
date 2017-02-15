@@ -119,6 +119,15 @@ const uip_ipaddr_t uip_netmask = {
 uip_ipaddr_t uip_hostaddr, uip_draddr, uip_netmask;
 #endif /* UIP_FIXEDADDR */
 
+static const uip_ipaddr_t mdns_multicast_addr =
+#if UIP_CONF_IPV6
+#error mDNS on IPv6 not yet supported.
+#else /* UIP_CONF_IPV6 */
+    {
+        0x00e0, 0xfb00
+    };
+#endif /* UIP_CONF_IPV6 */
+
 static const uip_ipaddr_t all_ones_addr =
 #if UIP_CONF_IPV6
 {0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff};
@@ -930,7 +939,7 @@ uip_process(u8_t flag)
 #if UIP_BROADCAST
         DEBUG_PRINTF("UDP IP checksum 0x%04x\n", uip_ipchksum());
         if (BUF->proto == UIP_PROTO_UDP &&
-            uip_ipaddr_cmp(BUF->destipaddr, all_ones_addr)
+            (uip_ipaddr_cmp(BUF->destipaddr, all_ones_addr) || uip_ipaddr_cmp(BUF->destipaddr, mdns_multicast_addr))
             /*&&
             uip_ipchksum() == 0xffff*/) {
             goto udp_input;
