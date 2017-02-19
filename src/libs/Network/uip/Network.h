@@ -43,6 +43,7 @@ private:
 
     struct timer periodic_timer, arp_timer;
     char *hostname;
+    char *srv_hostname;
     volatile uint32_t tickcnt;
     uint8_t mac_address[6];
     uint8_t ipaddr[4];

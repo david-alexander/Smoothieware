@@ -17,6 +17,8 @@
 #include "NetworkPublicAccess.h"
 #include "checksumm.h"
 #include "ConfigValue.h"
+#include "SerialConsole.h"
+#include "StreamOutputPool.h"
 
 #include "uip.h"
 #include "telnetd.h"
@@ -40,6 +42,7 @@
 #define network_mac_override_checksum CHECKSUM("mac_override")
 #define network_ip_address_checksum CHECKSUM("ip_address")
 #define network_hostname_checksum CHECKSUM("hostname")
+#define network_srv_hostname_checksum CHECKSUM("srv_hostname")
 #define network_ip_gateway_checksum CHECKSUM("ip_gateway")
 #define network_ip_mask_checksum CHECKSUM("ip_mask")
 
@@ -57,6 +60,7 @@ Network::Network()
     tickcnt= 0;
     sftpd= NULL;
     hostname = NULL;
+    srv_hostname = NULL;
     plan9_enabled= false;
     command_q= CommandQueue::getInstance();
 }
@@ -66,6 +70,9 @@ Network::~Network()
     delete ethernet;
     if (hostname != NULL) {
         delete hostname;
+    }
+    if (srv_hostname != NULL) {
+        delete srv_hostname;
     }
     theNetwork= nullptr;
 }
@@ -113,7 +120,7 @@ static bool parse_hostname(const string &s)
     for (unsigned int i = 0; i < str_len; i++) {
         const char c = s.at(i);
         if(!(c >= 'a' && c <= 'z')
-                && !(c >= 'A' && c <= 'Z')
+                && !((c >= 'A' && c <= 'Z') || (c == '_'))
                 && !(i != 0 && c >= '0' && c <= '9')
                 && !(i != 0 && i != str_len - 1 && (c == '-' || c == '.'))){
             return false;
@@ -187,6 +194,16 @@ void Network::on_module_loaded()
             strcpy(hostname, s.c_str());
         }else{
             printf("Invalid hostname: %s\n", s.c_str());
+        }
+    }
+
+    s = THEKERNEL->config->value( network_checksum, network_srv_hostname_checksum )->as_string();
+    if (!s.empty()) {
+        if(parse_hostname(s)){
+            srv_hostname = new char [s.length() + 1];
+            strcpy(srv_hostname, s.c_str());
+        }else{
+            printf("Invalid SRV hostname: %s\n", s.c_str());
         }
     }
 
@@ -389,7 +406,7 @@ void Network::init(void)
 
     if (use_mdns)
     {
-        mdns_init(mac_address, sizeof(mac_address), hostname);
+        mdns_init(mac_address, sizeof(mac_address), hostname, srv_hostname);
     }
 }
 

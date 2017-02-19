@@ -43,16 +43,29 @@ struct mdns_state {
   struct uip_udp_conn *conn_send;
   char* hostname;
   size_t hostname_len;
+  char* srv_hostname;
+  size_t srv_hostname_len;
+  char* srv_instance;
+  size_t srv_instance_len;
   char send_response;
+  char send_srv_response;
+  char send_ptr_response;
+  char send_txt_response;
   const char* response_packet;
   size_t response_packet_len;
+  const char* srv_response_packet;
+  size_t srv_response_packet_len;
+  const char* ptr_response_packet;
+  size_t ptr_response_packet_len;
+  const char* txt_response_packet;
+  size_t txt_response_packet_len;
 };
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-void mdns_init(const void *mac_addr, int mac_len, char *hostname);
+void mdns_init(const void *mac_addr, int mac_len, char *hostname, char *srv_hostname);
 
 void mdns_appcall();
 
