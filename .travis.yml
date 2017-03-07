@@ -8,5 +8,5 @@ script: make
 # whitelist
 branches:
   only:
-    - edge
+    - release/vertigo-1
  
