@@ -455,6 +455,12 @@ PT_THREAD(handle_websocket_frame(struct httpd_state *s))
     else
     {
         s->inputbuf[s->websocket.readBufferPos + s->websocket.readPayloadLength] = '\0';
+
+        if (s->inputbuf[s->websocket.readBufferPos + s->websocket.readPayloadLength - 1] == '\n')
+        {
+            s->inputbuf[s->websocket.readBufferPos + s->websocket.readPayloadLength - 1] = '\0';
+        }
+
         network_add_command(&s->inputbuf[s->websocket.readBufferPos], s->pstream);
         s->command_count++;
     }
@@ -488,7 +494,7 @@ PT_THREAD(handle_output(struct httpd_state *s))
     }
     else if (s->websocket.stage == Established)
     {
-        if (s->command_count > 0)
+        if (fifo_size(s->fifo) > 0)
         {
             PT_WAIT_THREAD(&s->outputpt, send_command_response(s));
         }

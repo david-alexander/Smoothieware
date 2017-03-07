@@ -261,15 +261,6 @@ PT_THREAD(handle_mdns())
         }
         else
         {
-            if (debug_len > 0)
-            {
-                memcpy(uip_appdata, debug_buf, debug_len);
-                uip_len = debug_len;
-                uip_send(uip_appdata, uip_len);
-
-                debug_len = 0;
-            }
-
             init_response_packet();
 
             if (s.send_response)
@@ -362,7 +353,7 @@ mdns_init(const void *mac_addr, int mac_len, char *hostname, char *srv_hostname)
     char* fully_qualified_hostname = malloc(strlen(hostname) + strlen(".local") + 1);
     sprintf(fully_qualified_hostname, "%s.local", hostname);
 
-    char* srv_instance_name = malloc(strlen(hostname) + strlen(".") + strlen(srv_hostname));
+    char* srv_instance_name = malloc(strlen(hostname) + strlen(".") + strlen(srv_hostname) + 1);
     sprintf(srv_instance_name, "%s.%s", hostname, srv_hostname);
 
     mdns_convert_hostname(&s.hostname, &s.hostname_len, fully_qualified_hostname);
