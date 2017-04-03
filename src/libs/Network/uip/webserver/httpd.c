@@ -446,7 +446,8 @@ PT_THREAD(handle_websocket_frame(struct httpd_state *s))
     }
     else if (s->websocket.readHeader.opcode == 0x8) // connection close
     {
-
+        PSOCK_CLOSE(&s->sout);
+        s->websocket.stage = Inactive;
     }
     else if (s->websocket.readHeader.opcode == 0x0) // continuation
     {
