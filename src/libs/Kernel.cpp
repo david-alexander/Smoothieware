@@ -159,6 +159,11 @@ Kernel::Kernel(){
     this->configurator = new Configurator();
 }
 
+extern "C" char const* get_query_string()
+{
+    return THEKERNEL->get_query_string().c_str();
+}
+
 // return a GRBL-like query string for serial ?
 std::string Kernel::get_query_string()
 {
@@ -233,6 +238,11 @@ void Kernel::call_event(_EVENT_ENUM id_event, void * argument){
     if(id_event == ON_HALT) {
         this->halted= (argument == nullptr);
         was_idle= conveyor->is_idle(); // see if we were doing anything like printing
+    }
+
+    if (id_event == ON_FEED_HOLD_TEST)
+    {
+        this->step_ticker->feed_hold_test();
     }
 
     // send to all registered modules

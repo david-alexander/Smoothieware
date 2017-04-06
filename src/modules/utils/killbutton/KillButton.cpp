@@ -55,13 +55,14 @@ void KillButton::on_idle(void *argument)
 {
     if(state == KILL_BUTTON_DOWN) {
         if(!THEKERNEL->is_halted()) {
-            THEKERNEL->call_event(ON_HALT, nullptr);
-            THEKERNEL->streams->printf("Kill button pressed - reset or M999 to continue\r\n");
+            THEKERNEL->call_event(ON_FEED_HOLD_TEST, nullptr);
+            state = KILLED_BUTTON_DOWN;
+            //THEKERNEL->streams->printf("Kill button pressed - reset or M999 to continue\r\n");
         }
 
     }else if(state == UNKILL_FIRE) {
         if(THEKERNEL->is_halted()) {
-            THEKERNEL->call_event(ON_HALT, (void *)1); // clears on_halt
+            THEKERNEL->call_event(ON_FEED_HOLD_TEST, (void *)1); // clears on_halt
             THEKERNEL->streams->printf("UnKill button pressed Halt cleared\r\n");
         }
     }
@@ -71,7 +72,7 @@ void KillButton::on_idle(void *argument)
 // Note this is ISR so don't do anything nasty in here
 uint32_t KillButton::button_tick(uint32_t dummy)
 {
-    bool killed= THEKERNEL->is_halted();
+    bool killed = false;
 
     switch(state) {
             case IDLE:
@@ -79,14 +80,13 @@ uint32_t KillButton::button_tick(uint32_t dummy)
                 else if(unkill_enable && killed) state= KILLED_BUTTON_UP; // allow kill button to unkill if kill was created fromsome other source
                 break;
             case KILL_BUTTON_DOWN:
-                if(killed) state= KILLED_BUTTON_DOWN;
+                state= KILLED_BUTTON_DOWN;
                 break;
             case KILLED_BUTTON_DOWN:
                 if(this->kill_button.get()) state= KILLED_BUTTON_UP;
                 break;
             case KILLED_BUTTON_UP:
-                if(!killed) state= IDLE;
-                else if(unkill_enable && !this->kill_button.get()) state= UNKILL_BUTTON_DOWN;
+                state= IDLE;
                 break;
             case UNKILL_BUTTON_DOWN:
                 unkill_timer= 0;

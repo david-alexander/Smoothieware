@@ -20,6 +20,11 @@
 #include <math.h>
 #include <mri.h>
 
+#define FEED_HOLD_STATE_INACTIVE 0
+#define FEED_HOLD_STATE_DECELERATING 1
+#define FEED_HOLD_STATE_ACTIVE 2
+#define FEED_HOLD_STATE_ACCELERATING 3
+
 #ifdef STEPTICKER_DEBUG_PIN
 // debug pins, only used if defined in src/makefile
 #include "gpio.h"
@@ -34,6 +39,8 @@ StepTicker *StepTicker::instance;
 StepTicker::StepTicker()
 {
     instance = this; // setup the Singleton instance of the stepticker
+
+    speed_multiplier = 1.0F;
 
     // Configure the timer
     LPC_TIM0->MR0 = 10000000;       // Initial dummy value for Match Register
@@ -60,6 +67,8 @@ StepTicker::StepTicker()
     stepticker_debug_pin.output();
     stepticker_debug_pin= 0;
     #endif
+
+    feed_hold_state = FEED_HOLD_STATE_INACTIVE;
 }
 
 StepTicker::~StepTicker()
@@ -78,10 +87,32 @@ void StepTicker::start()
 void StepTicker::set_frequency( float frequency )
 {
     this->frequency = frequency;
-    this->period = floorf((SystemCoreClock / 4.0F) / frequency); // SystemCoreClock/4 = Timer increments in a second
+    this->recalculate_timer_settings(true);
+}
+
+void StepTicker::set_speed_multiplier( float multiplier, bool needs_reset )
+{
+    if (multiplier < 0.01F)
+    {
+        return;
+    }
+
+    this->speed_multiplier = multiplier;
+    this->recalculate_timer_settings(needs_reset);
+}
+
+void StepTicker::recalculate_timer_settings( bool needs_reset )
+{
+    float realFrequency = this->frequency * this->speed_multiplier;
+
+    this->period = floorf((SystemCoreClock / 4.0F) / realFrequency); // SystemCoreClock/4 = Timer increments in a second
     LPC_TIM0->MR0 = this->period;
-    LPC_TIM0->TCR = 3;  // Reset
-    LPC_TIM0->TCR = 1;  // start
+
+    if (needs_reset)
+    {
+        LPC_TIM0->TCR = 3;  // Reset
+        LPC_TIM0->TCR = 1;  // start
+    }
 }
 
 // Set the reset delay, must be called after set_frequency
@@ -135,11 +166,46 @@ void StepTicker::step_tick (void)
 {
     //SET_STEPTICKER_DEBUG_PIN(running ? 1 : 0);
 
+    // BEGIN test feed hold
+    if (this->feed_hold_state == FEED_HOLD_STATE_ACCELERATING || this->feed_hold_state == FEED_HOLD_STATE_DECELERATING)
+    {
+        float acceleration_percent_remaining = (float)feed_hold_acceleration_time_remaining / feed_hold_acceleration_time_total;
+
+        if (this->feed_hold_state == FEED_HOLD_STATE_ACCELERATING)
+        {
+            //printf("ACCEL PERCENT REMAINING = %f\n", acceleration_percent_remaining);
+            this->set_speed_multiplier(1.0F - acceleration_percent_remaining);
+        }
+        else
+        {
+            this->set_speed_multiplier(acceleration_percent_remaining);
+        }
+
+        feed_hold_acceleration_time_remaining -= 1.0F / (this->frequency * this->speed_multiplier);
+
+        if (feed_hold_acceleration_time_remaining <= 0.0)
+        {
+            this->feed_hold_state = (this->feed_hold_state == FEED_HOLD_STATE_ACCELERATING) ? FEED_HOLD_STATE_INACTIVE : FEED_HOLD_STATE_ACTIVE;
+
+            printf("Finished accel/decel and changed state to %d\n", this->feed_hold_state);
+
+            this->set_speed_multiplier(1.0F, true);
+        }
+    }
+
+    if (this->feed_hold_state == FEED_HOLD_STATE_ACTIVE)
+    {
+        return;
+    }
+
+    // END test feed hold
+
     // if nothing has been setup we ignore the ticks
     if(!running){
         // check if anything new available
         if(THECONVEYOR->get_next_block(&current_block)) { // returns false if no new block is available
             running= start_next_block(); // returns true if there is at least one motor with steps to issue
+
             if(!running) return;
         }else{
             return;
@@ -231,7 +297,6 @@ void StepTicker::step_tick (void)
 
         if(THECONVEYOR->get_next_block(&current_block)) { // returns false if no new block is available
             running= start_next_block(); // returns true if there is at least one motor with steps to issue
-
         }else{
             current_block= nullptr;
             running= false;
@@ -242,6 +307,28 @@ void StepTicker::step_tick (void)
         //NVIC_SetPendingIRQ(PendSV_IRQn); this doesn't work
         //SCB->ICSR = 0x10000000; // SCB_ICSR_PENDSVSET_Msk;
     }
+}
+
+void StepTicker::feed_hold_test ()
+{
+    const float feed_hold_acceleration_seconds = 1.0F;
+
+    printf("feed_hold_test() - state = %d\n", feed_hold_state);
+
+    if (feed_hold_state == FEED_HOLD_STATE_INACTIVE)
+    {
+        feed_hold_state = FEED_HOLD_STATE_DECELERATING;
+        feed_hold_acceleration_time_total = feed_hold_acceleration_time_remaining = feed_hold_acceleration_seconds;
+        printf("feed_hold_test() - changed state = %d\n", feed_hold_state);
+    }
+    else if (feed_hold_state == FEED_HOLD_STATE_ACTIVE)
+    {
+        feed_hold_state = FEED_HOLD_STATE_ACCELERATING;
+        feed_hold_acceleration_time_total = feed_hold_acceleration_time_remaining = feed_hold_acceleration_seconds;
+        printf("feed_hold_test() - changed state = %d\n", feed_hold_state);
+    }
+
+    this->set_speed_multiplier(1.0F, true);
 }
 
 // only called from the step tick ISR (single consumer)

@@ -30,6 +30,7 @@ class StepTicker{
     public:
         StepTicker();
         ~StepTicker();
+        void set_speed_multiplier( float multiplier, bool needs_reset = false );
         void set_frequency( float frequency );
         void set_unstep_time( float microseconds );
         int register_motor(StepperMotor* motor);
@@ -41,16 +42,20 @@ class StepTicker{
         void handle_finish (void);
         void start();
 
+        void feed_hold_test (void);
+
         // whatever setup the block should register this to know when it is done
         std::function<void()> finished_fnc{nullptr};
 
         static StepTicker *getInstance() { return instance; }
 
     private:
+        void recalculate_timer_settings( bool needs_reset );
+
         static StepTicker *instance;
 
         bool start_next_block();
-
+        float speed_multiplier;
         float frequency;
         uint32_t period;
         std::array<StepperMotor*, k_max_actuators> motor;
@@ -58,6 +63,12 @@ class StepTicker{
 
         Block *current_block;
         uint32_t current_tick{0};
+
+        // BEGIN feed hold test
+        uint32_t feed_hold_state;
+        float feed_hold_acceleration_time_total;
+        float feed_hold_acceleration_time_remaining;
+        // END feed hold test
 
         struct {
             volatile bool running:1;
