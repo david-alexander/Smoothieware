@@ -187,11 +187,13 @@ std::string Kernel::get_query_string()
         str.append("Run,");
     }
 
-    if(running) {
+    if(true || running) {
         float mpos[3];
         robot->get_current_machine_position(mpos);
         // current_position/mpos includes the compensation transform so we need to get the inverse to get actual position
         if(robot->compensationTransform) robot->compensationTransform(mpos, true); // get inverse compensation transform
+
+        printf("Current machine position: %f, %f, %f\n", robot->from_millimeters(mpos[0]), robot->from_millimeters(mpos[1]), robot->from_millimeters(mpos[2]));
 
         char buf[128];
         // machine position

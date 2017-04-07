@@ -27,6 +27,8 @@ class Block {
 
         float get_trapezoid_rate(int i) const;
 
+        uint32_t get_current_accel_event(uint32_t tick, int8_t direction) const;
+
         std::array<uint32_t, k_max_actuators> steps; // Number of steps for each axis for this block
         uint32_t steps_event_count;  // Steps for the longest axis
         float nominal_rate;       // Nominal rate in steps per second
@@ -53,12 +55,11 @@ class Block {
         using tickinfo_t= struct {
             int32_t steps_per_tick; // 2.30 fixed point
             int32_t counter; // 2.30 fixed point
-            int32_t acceleration_change; // 2.30 fixed point signed
-            int32_t deceleration_change; // 2.30 fixed point
+            int32_t acceleration_rate; // 2.30 fixed point signed
+            int32_t deceleration_rate; // 2.30 fixed point
             int32_t plateau_rate; // 2.30 fixed point
             uint32_t steps_to_move;
             uint32_t step_count;
-            uint32_t next_accel_event;
         };
 
         // need info for each active motor

@@ -68,6 +68,7 @@ class StepTicker{
         uint32_t feed_hold_state;
         float feed_hold_acceleration_time_total;
         float feed_hold_acceleration_time_remaining;
+        bool feed_reverse;
         // END feed hold test
 
         struct {

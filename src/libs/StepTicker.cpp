@@ -69,6 +69,7 @@ StepTicker::StepTicker()
     #endif
 
     feed_hold_state = FEED_HOLD_STATE_INACTIVE;
+    feed_reverse = false;
 }
 
 StepTicker::~StepTicker()
@@ -195,6 +196,10 @@ void StepTicker::step_tick (void)
 
     if (this->feed_hold_state == FEED_HOLD_STATE_ACTIVE)
     {
+        for (uint8_t m = 0; m < num_motors; m++)
+        {
+            current_block->tick_info[m].counter = 0;
+        }
         return;
     }
 
@@ -219,28 +224,38 @@ void StepTicker::step_tick (void)
         return;
     }
 
+    int8_t feed_direction = feed_reverse ? -1 : 1;
+
+    uint32_t accel_event = current_block->get_current_accel_event(current_tick, feed_direction);
+
     bool still_moving= false;
     // foreach motor, if it is active see if time to issue a step to that motor
     for (uint8_t m = 0; m < num_motors; m++) {
         if(current_block->tick_info[m].steps_to_move == 0) continue; // not active
 
-        current_block->tick_info[m].steps_per_tick += current_block->tick_info[m].acceleration_change;
+        bool motor_direction = current_block->direction_bits[m];
 
-        if(current_tick == current_block->tick_info[m].next_accel_event) {
-            if(current_tick == current_block->accelerate_until) { // We are done accelerating, deceleration becomes 0 : plateau
-                current_block->tick_info[m].acceleration_change = 0;
-                if(current_block->decelerate_after < current_block->total_move_ticks) {
-                    current_block->tick_info[m].next_accel_event = current_block->decelerate_after;
-                    if(current_tick != current_block->decelerate_after) { // We are plateauing
-                        // steps/sec / tick frequency to get steps per tick
-                        current_block->tick_info[m].steps_per_tick = current_block->tick_info[m].plateau_rate;
-                    }
-                }
-            }
+        if (feed_reverse)
+        {
+            motor_direction = !motor_direction;
+        }
 
-            if(current_tick == current_block->decelerate_after) { // We start decelerating
-                current_block->tick_info[m].acceleration_change = current_block->tick_info[m].deceleration_change;
-            }
+        if (motor[m]->which_direction() != motor_direction)
+        {
+            motor[m]->set_direction(motor_direction);
+        }
+
+        if (accel_event == 0) // acceleration
+        {
+            current_block->tick_info[m].steps_per_tick += current_block->tick_info[m].acceleration_rate;
+        }
+        else if (accel_event == current_block->accelerate_until) // plateau
+        {
+            current_block->tick_info[m].steps_per_tick = current_block->tick_info[m].plateau_rate;
+        }
+        else // deceleration
+        {
+            current_block->tick_info[m].steps_per_tick += current_block->tick_info[m].deceleration_rate;
         }
 
         // protect against rounding errors and such
@@ -253,16 +268,20 @@ void StepTicker::step_tick (void)
 
         if(current_block->tick_info[m].counter >= STEPTICKER_FPSCALE) { // >= 1.0 step time
             current_block->tick_info[m].counter -= STEPTICKER_FPSCALE; // -= 1.0F;
-            ++current_block->tick_info[m].step_count;
+            current_block->tick_info[m].step_count += feed_direction;
 
             // step the motor
             bool ismoving= motor[m]->step(); // returns false if the moving flag was set to false externally (probes, endstops etc)
             // we stepped so schedule an unstep
             unstep.set(m);
 
-            if(!ismoving || current_block->tick_info[m].step_count == current_block->tick_info[m].steps_to_move) {
+            bool isdone = 
+                (!feed_reverse && current_block->tick_info[m].step_count == current_block->tick_info[m].steps_to_move)
+                || (feed_reverse && current_block->tick_info[m].step_count == 0);
+
+            if(!ismoving || isdone) {
                 // done
-                current_block->tick_info[m].steps_to_move = 0;
+                //current_block->tick_info[m].steps_to_move = 0;
                 motor[m]->stop_moving(); // let motor know it is no longer moving
             }
         }
@@ -272,7 +291,7 @@ void StepTicker::step_tick (void)
     }
 
     // do this after so we start at tick 0
-    current_tick++; // count number of ticks
+    current_tick += feed_direction; // count number of ticks
 
     // We may have set a pin on in this tick, now we reset the timer to set it off
     // Note there could be a race here if we run another tick before the unsteps have happened,
@@ -325,6 +344,7 @@ void StepTicker::feed_hold_test ()
     {
         feed_hold_state = FEED_HOLD_STATE_ACCELERATING;
         feed_hold_acceleration_time_total = feed_hold_acceleration_time_remaining = feed_hold_acceleration_seconds;
+        feed_reverse = !feed_reverse;
         printf("feed_hold_test() - changed state = %d\n", feed_hold_state);
     }
 

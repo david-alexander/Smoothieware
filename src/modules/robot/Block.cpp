@@ -71,12 +71,11 @@ void Block::clear()
     for(auto &i : tick_info) {
         i.steps_per_tick= 0;
         i.counter= 0;
-        i.acceleration_change= 0;
-        i.deceleration_change= 0;
+        i.acceleration_rate= 0;
+        i.deceleration_rate= 0;
         i.plateau_rate= 0;
         i.steps_to_move= 0;
         i.step_count= 0;
-        i.next_accel_event= 0;
     }
 }
 
@@ -295,6 +294,34 @@ float Block::max_exit_speed()
     return min(max, nominal_speed);
 }
 
+uint32_t Block::get_current_accel_event(uint32_t tick, int8_t direction) const
+{
+    uint32_t events[] = { 0, this->accelerate_until, this->decelerate_after, this->total_move_ticks + 1 };
+
+    if (direction > 0)
+    {
+        for (int8_t i = 0; i < sizeof(events) / sizeof(events[0]); i++)
+        {
+            if (events[i] > tick)
+            {
+                return events[i-1];
+            }
+        }
+    }
+    else
+    {
+        for (int8_t i = sizeof(events) / sizeof(events[0]) - 1; i >= 0; i--)
+        {
+            if (events[i] <= tick)
+            {
+                return events[i];
+            }
+        }
+    }
+
+    return 0;
+}
+
 // prepare block for the step ticker, called everytime the block changes
 // this is done during planning so does not delay tick generation and step ticker can simply grab the next block during the interrupt
 void Block::prepare()
@@ -309,25 +336,10 @@ void Block::prepare()
         this->tick_info[m].steps_per_tick = STEPTICKER_TOFP((this->initial_rate * aratio) / STEP_TICKER_FREQUENCY); // steps/sec / tick frequency to get steps per tick in 2.30 fixed point
         this->tick_info[m].counter = 0; // 2.30 fixed point
         this->tick_info[m].step_count = 0;
-        this->tick_info[m].next_accel_event = this->total_move_ticks + 1;
-
-        float acceleration_change = 0;
-        if(this->accelerate_until != 0) { // If the next accel event is the end of accel
-            this->tick_info[m].next_accel_event = this->accelerate_until;
-            acceleration_change = this->acceleration_per_tick;
-
-        } else if(this->decelerate_after == 0 /*&& this->accelerate_until == 0*/) {
-            // we start off decelerating
-            acceleration_change = -this->deceleration_per_tick;
-
-        } else if(this->decelerate_after != this->total_move_ticks /*&& this->accelerate_until == 0*/) {
-            // If the next event is the start of decel ( don't set this if the next accel event is accel end )
-            this->tick_info[m].next_accel_event = this->decelerate_after;
-        }
 
         // convert to fixed point after scaling
-        this->tick_info[m].acceleration_change= STEPTICKER_TOFP(acceleration_change * aratio);
-        this->tick_info[m].deceleration_change= -STEPTICKER_TOFP(this->deceleration_per_tick * aratio);
+        this->tick_info[m].acceleration_rate= STEPTICKER_TOFP(this->acceleration_per_tick * aratio);
+        this->tick_info[m].deceleration_rate= -STEPTICKER_TOFP(this->deceleration_per_tick * aratio);
         this->tick_info[m].plateau_rate= STEPTICKER_TOFP((this->maximum_rate * aratio) / STEP_TICKER_FREQUENCY);
     }
 }
