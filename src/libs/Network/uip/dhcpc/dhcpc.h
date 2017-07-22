@@ -61,7 +61,7 @@ struct dhcpc_state {
 extern "C" {
 #endif
 
-void dhcpc_init(const void *mac_addr, int mac_len, char *hostname);
+void dhcpc_init(const void *mac_addr, int mac_len, char *hostname, uint32_t client_ip_addr);
 void dhcpc_request(void);
 
 void dhcpc_appcall(void);

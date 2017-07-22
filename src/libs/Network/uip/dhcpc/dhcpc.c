@@ -47,6 +47,7 @@
 #define STATE_CONFIG_RECEIVED 3
 
 #define ntohl(a) ((((a) >> 24) & 0x000000FF) | (((a) >> 8) & 0x0000FF00) | (((a) << 8) & 0x00FF0000) | (((a) << 24) & 0xFF000000))
+#define htonl(a) (ntohl(a))
 static struct dhcpc_state s __attribute__ ((section ("AHBSRAM1")));
 //#define UIP_CONF_DHCP_LIGHT
 
@@ -97,6 +98,9 @@ static uint32_t xid= 0x00112233;
 
 static const u8_t magic_cookie[4] = {99, 130, 83, 99};
 /*---------------------------------------------------------------------------*/
+static char is_server = 0;
+static uint32_t client_ip_addr_ = 0x0;
+/*---------------------------------------------------------------------------*/
 static u8_t *
 add_msg_type(u8_t *optptr, u8_t type)
 {
@@ -113,6 +117,21 @@ add_server_id(u8_t *optptr)
     *optptr++ = 4;
     memcpy(optptr, &s.serverid, 4);
     return optptr + 4;
+}
+/*---------------------------------------------------------------------------*/
+static u8_t *
+add_option(u8_t *optptr, u8_t optid, u8_t *data, u8_t data_len)
+{
+    *optptr++ = optid;
+    *optptr++ = data_len;
+    memcpy(optptr, data, data_len);
+    return optptr + data_len;
+}
+/*---------------------------------------------------------------------------*/
+static u8_t *
+add_option_int(u8_t *optptr, u8_t optid, uint32_t data)
+{
+    return add_option(optptr, optid, (u8_t*)&data, sizeof(data));
 }
 /*---------------------------------------------------------------------------*/
 static u8_t *
@@ -185,6 +204,30 @@ create_msg(register struct dhcp_msg *m, int rea)
 }
 /*---------------------------------------------------------------------------*/
 static void
+create_server_msg(register struct dhcp_msg *m, uint32_t xid, uint32_t ciaddr, u8_t* chaddr, uint32_t yiaddr)
+{
+    m->op = DHCP_REQUEST;
+    m->htype = DHCP_HTYPE_ETHERNET;
+    m->hlen = s.mac_len;
+    m->hops = 0;
+    memcpy(m->xid, &xid, sizeof(m->xid));
+    m->secs = 0;
+    m->flags = HTONS(BOOTP_BROADCAST); /*  Broadcast bit. */
+    memcpy(m->ciaddr, &ciaddr, sizeof(m->ciaddr));
+    memcpy(m->yiaddr, &yiaddr, sizeof(m->yiaddr));
+    memcpy(m->siaddr, &uip_hostaddr, sizeof(m->siaddr));
+    memset(m->giaddr, 0, sizeof(m->giaddr));
+    memcpy(m->chaddr, chaddr, s.mac_len);
+    memset(&m->chaddr[s.mac_len], 0, sizeof(m->chaddr) - s.mac_len);
+#ifndef UIP_CONF_DHCP_LIGHT
+    memset(m->sname, 0, sizeof(m->sname));
+    memset(m->file, 0, sizeof(m->file));
+#endif
+
+    memcpy(m->options, magic_cookie, sizeof(magic_cookie));
+}
+/*---------------------------------------------------------------------------*/
+static void
 send_discover(void)
 {
     u8_t *end;
@@ -194,6 +237,24 @@ send_discover(void)
 
     end = add_msg_type(&m->options[4], DHCPDISCOVER);
     end = add_req_options(end);
+    end = add_end(end);
+
+    uip_send(uip_appdata, end - (u8_t *)uip_appdata);
+}
+/*---------------------------------------------------------------------------*/
+static void
+send_offer(int xid, uint32_t ciaddr, u8_t* chaddr, uint32_t yiaddr)
+{
+    u8_t *end;
+    struct dhcp_msg *m = (struct dhcp_msg *)uip_appdata;
+
+    create_server_msg(m, xid, ciaddr, chaddr, yiaddr);
+
+    end = add_msg_type(&m->options[4], DHCPOFFER);
+    end = add_server_id(end);
+    end = add_option_int(end, DHCP_OPTION_LEASE_TIME, htonl(86400));
+    end = add_option_int(end, DHCP_OPTION_SUBNET_MASK, htonl(0xFFFF0000));
+    end = add_option_int(end, DHCP_OPTION_ROUTER, htonl(0x00000000));
     end = add_end(end);
 
     uip_send(uip_appdata, end - (u8_t *)uip_appdata);
@@ -211,6 +272,40 @@ send_request(int rea)
     end = add_server_id(end);
     end = add_req_ipaddr(end);
     end = add_hostname(end);
+    end = add_end(end);
+
+    uip_send(uip_appdata, end - (u8_t *)uip_appdata);
+}
+/*---------------------------------------------------------------------------*/
+static void
+send_ack(uint32_t xid, uint32_t ciaddr, u8_t* chaddr, uint32_t yiaddr)
+{
+    u8_t *end;
+    struct dhcp_msg *m = (struct dhcp_msg *)uip_appdata;
+
+    create_server_msg(m, xid, ciaddr, chaddr, yiaddr);
+
+    end = add_msg_type(&m->options[4], DHCPACK);
+    end = add_option_int(end, DHCP_OPTION_LEASE_TIME, htonl(86400));
+    end = add_option_int(end, DHCP_OPTION_SUBNET_MASK, htonl(0xFFFF0000));
+    end = add_option_int(end, DHCP_OPTION_ROUTER, htonl(0x00000000));
+    end = add_end(end);
+
+    uip_send(uip_appdata, end - (u8_t *)uip_appdata);
+}
+/*---------------------------------------------------------------------------*/
+static void
+send_nak(uint32_t xid, uint32_t ciaddr, u8_t* chaddr, uint32_t yiaddr)
+{
+    u8_t *end;
+    struct dhcp_msg *m = (struct dhcp_msg *)uip_appdata;
+
+    create_server_msg(m, xid, ciaddr, chaddr, yiaddr);
+
+    end = add_msg_type(&m->options[4], DHCPNAK);
+    end = add_option_int(end, DHCP_OPTION_LEASE_TIME, htonl(86400));
+    end = add_option_int(end, DHCP_OPTION_SUBNET_MASK, htonl(0xFFFF0000));
+    end = add_option_int(end, DHCP_OPTION_ROUTER, htonl(0x00000000));
     end = add_end(end);
 
     uip_send(uip_appdata, end - (u8_t *)uip_appdata);
@@ -251,6 +346,36 @@ parse_options(u8_t *optptr, int len)
     return type;
 }
 /*---------------------------------------------------------------------------*/
+static u8_t
+get_server_option(u8_t *optptr, int len, char optid, u8_t* option, u8_t option_size)
+{
+    u8_t *end = optptr + len;
+
+    while (optptr < end) {
+        if (*optptr == optid)
+        {
+            memcpy(option, optptr + 2, option_size);
+            return 1;
+        }
+        else if (*optptr == DHCP_OPTION_END)
+        {
+            break;
+        }
+
+        optptr += optptr[1] + 2;
+    }
+
+    return 0;
+}
+/*---------------------------------------------------------------------------*/
+static uint32_t
+get_server_option_int(u8_t *optptr, int len, char optid, uint32_t default_value)
+{
+    uint32_t option = default_value;
+    get_server_option(optptr, len, optid, &option, sizeof(option));
+    return option;
+}
+/*---------------------------------------------------------------------------*/
 u8_t
 parse_msg(void)
 {
@@ -260,6 +385,17 @@ parse_msg(void)
         memcmp(m->xid, &xid, sizeof(xid)) == 0 &&
         memcmp(m->chaddr, s.mac_addr, s.mac_len) == 0) {
         memcpy(&s.ipaddr, m->yiaddr, 4);
+        return parse_options(&m->options[4], uip_datalen());
+    }
+    return 0;
+}
+/*---------------------------------------------------------------------------*/
+u8_t
+parse_server_msg(void)
+{
+    struct dhcp_msg *m = (struct dhcp_msg *)uip_appdata;
+
+    if (m->op == DHCP_REQUEST) {
         return parse_options(&m->options[4], uip_datalen());
     }
     return 0;
@@ -364,20 +500,60 @@ PT_THREAD(handle_dhcp(void))
     PT_END(&s.pt);
 }
 /*---------------------------------------------------------------------------*/
-void
-dhcpc_init(const void *mac_addr, int mac_len, char *hostname)
+static
+PT_THREAD(handle_dhcp_server(void))
 {
+    PT_BEGIN(&s.pt);
+
+    PT_WAIT_UNTIL(&s.pt, uip_newdata());
+
+    int msg_type = parse_server_msg();
+    struct dhcp_msg *m = (struct dhcp_msg *)uip_appdata;
+
+    if (msg_type == DHCPDISCOVER)
+    {
+        send_offer(*(uint32_t*)m->xid, *(uint32_t*)m->ciaddr, m->chaddr, htonl(client_ip_addr_));
+    }
+    else if (msg_type == DHCPREQUEST)
+    {
+        uint32_t requested_ip_addr = ntohl(get_server_option_int(&m->options[4], uip_datalen(), DHCP_OPTION_REQ_IPADDR, 0x0));
+
+        if (requested_ip_addr == client_ip_addr_)
+        {
+            send_ack(*(uint32_t*)m->xid, *(uint32_t*)m->ciaddr, m->chaddr, htonl(client_ip_addr_));
+        }
+        else
+        {
+            send_nak(*(uint32_t*)m->xid, *(uint32_t*)m->ciaddr, m->chaddr, htonl(client_ip_addr_));
+        }
+    }
+
+    PT_END(&s.pt);
+}
+/*---------------------------------------------------------------------------*/
+void
+dhcpc_init(const void *mac_addr, int mac_len, char *hostname, uint32_t client_ip_addr)
+{
+    is_server = client_ip_addr != 0x0;
+    client_ip_addr_ = ntohl(client_ip_addr);
+
     uip_ipaddr_t addr;
 
     s.mac_addr = mac_addr;
     s.mac_len  = mac_len;
     s.hostname = hostname;
 
+    if (is_server)
+    {
+        memcpy(&s.serverid, uip_hostaddr, sizeof(uip_ipaddr_t));
+    }
+
     s.state = STATE_INITIAL;
     uip_ipaddr(addr, 255, 255, 255, 255);
-    s.conn = uip_udp_new(&addr, HTONS(DHCPC_SERVER_PORT));
+
+    s.conn = uip_udp_new(&addr, HTONS(is_server ? DHCPC_CLIENT_PORT : DHCPC_SERVER_PORT));
     if (s.conn != NULL) {
-        uip_udp_bind(s.conn, HTONS(DHCPC_CLIENT_PORT));
+        uip_udp_bind(s.conn, HTONS(is_server ? DHCPC_SERVER_PORT : DHCPC_CLIENT_PORT));
     }
     PT_INIT(&s.pt);
 }
@@ -385,12 +561,21 @@ dhcpc_init(const void *mac_addr, int mac_len, char *hostname)
 void
 dhcpc_appcall(void)
 {
-    handle_dhcp();
+    if (is_server)
+    {
+        handle_dhcp_server();
+    }
+    else
+    {
+        handle_dhcp();
+    }
 }
 /*---------------------------------------------------------------------------*/
 void
 dhcpc_request(void)
 {
+    if (is_server) return;
+
     u16_t ipaddr[2];
 
     if (s.state == STATE_INITIAL) {

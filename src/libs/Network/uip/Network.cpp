@@ -41,6 +41,7 @@
 #define network_plan9_checksum CHECKSUM("plan9")
 #define network_mac_override_checksum CHECKSUM("mac_override")
 #define network_ip_address_checksum CHECKSUM("ip_address")
+#define network_client_ip_address_checksum CHECKSUM("client_ip_address")
 #define network_hostname_checksum CHECKSUM("hostname")
 #define network_srv_hostname_checksum CHECKSUM("srv_hostname")
 #define network_ip_gateway_checksum CHECKSUM("ip_gateway")
@@ -160,6 +161,8 @@ void Network::on_module_loaded()
 
     ethernet->set_mac(mac_address);
 
+    use_dhcp_server = false;
+
     // get IP address, mask and gateway address here....
     string s = THEKERNEL->config->value( network_checksum, network_ip_address_checksum )->by_default("auto")->as_string();
     if (s == "auto") {
@@ -180,6 +183,10 @@ void Network::on_module_loaded()
         if (!parse_ip_str(s, ipgw, 4)) {
             printf("Invalid IP gateway: %s\n", s.c_str());
             bad = true;
+        }
+        s = THEKERNEL->config->value( network_checksum, network_client_ip_address_checksum )->by_default("")->as_string();
+        if (parse_ip_str(s, clientipaddr, 4)) {
+            use_dhcp_server = true;
         }
         if (bad) {
             printf("Network not started due to errors in config");
@@ -396,9 +403,14 @@ void Network::init(void)
         uip_setnetmask(tip); /* mask */
         printf("IP mask: %d.%d.%d.%d\n", ipmask[0], ipmask[1], ipmask[2], ipmask[3]);
         setup_servers();
+
+        if (use_dhcp_server && *(uint32_t*)clientipaddr != 0x0)
+        {
+            dhcpc_init(mac_address, sizeof(mac_address), hostname, *(uint32_t*)clientipaddr);
+        }
     }else{
     #if UIP_CONF_UDP
-        dhcpc_init(mac_address, sizeof(mac_address), hostname);
+        dhcpc_init(mac_address, sizeof(mac_address), hostname, 0x0);
         dhcpc_request();
         printf("Getting IP address....\n");
     #endif

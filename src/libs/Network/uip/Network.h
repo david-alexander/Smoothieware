@@ -29,6 +29,7 @@ public:
         bool plan9_enabled:1;
         bool use_dhcp:1;
         bool use_mdns:1;
+        bool use_dhcp_server:1;
     };
 
 
@@ -47,6 +48,7 @@ private:
     volatile uint32_t tickcnt;
     uint8_t mac_address[6];
     uint8_t ipaddr[4];
+    uint8_t clientipaddr[4];
     uint8_t ipmask[4];
     uint8_t ipgw[4];
 };
