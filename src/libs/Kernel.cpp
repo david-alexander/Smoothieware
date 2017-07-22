@@ -159,6 +159,11 @@ Kernel::Kernel(){
     this->configurator = new Configurator();
 }
 
+extern "C" char const* get_query_string()
+{
+    return THEKERNEL->get_query_string().c_str();
+}
+
 // return a GRBL-like query string for serial ?
 std::string Kernel::get_query_string()
 {

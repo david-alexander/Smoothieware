@@ -60,6 +60,8 @@ struct websockets_state {
   struct websockets_header readHeader;
   uint64_t readPayloadLength;
   char readMaskKey[4];
+  char sendStatusResponse;
+  char responseBuffer[1024];
 };
 
 struct httpd_state {

@@ -122,7 +122,7 @@ static int command_result(const char *str, void *state)
         fifo_push(s->fifo, NULL);
 
     } else {
-        if (fifo_size(s->fifo) < 10) {
+        if (fifo_size(s->fifo) < 100) {
             DEBUG_PRINTF("Got command result (%p): %s", state, str);
             fifo_push(s->fifo, strdup(str));
             return 1;
@@ -244,26 +244,88 @@ static void write_websocket_header(char* output, struct websockets_header const*
     output[1] = ((inHeader->mask & 1) << 7) | ((inHeader->payloadLength & 127) << 0);
 }
 /*---------------------------------------------------------------------------*/
-static void prepare_websocket_frame(struct httpd_state *s, char* writeBuffer, char opcode, char* payload, uint64_t payloadLength)
+static size_t prepare_websocket_frame(struct httpd_state *s, char* writeBuffer, char opcode, char* payload, uint64_t payloadLength)
 {
     struct websockets_header header;
     header.fin = 1;
     header.opcode = opcode;
     header.mask = 0;
-    header.payloadLength = payloadLength; // TEMP: Assume no extended payload length needed.
+
+    int payloadLengthType = 0;
+
+    if (payloadLength < 126)
+    {
+        header.payloadLength = payloadLength;
+    }
+    else
+    {
+        payloadLengthType = 1;
+        header.payloadLength = 126; // TODO: Handle payload lengths longer than 2^16.
+    }
+
     char headerBytes[WEBSOCKET_HEADER_SIZE];
     write_websocket_header(headerBytes, &header);
 
+    char* writeBufferPos = writeBuffer;
+
     memcpy(writeBuffer, headerBytes, WEBSOCKET_HEADER_SIZE);
-    memcpy(writeBuffer + WEBSOCKET_HEADER_SIZE, payload, payloadLength);
+    writeBufferPos += WEBSOCKET_HEADER_SIZE;
+
+    if (payloadLengthType == 1)
+    {
+        uint16_t payloadLengthShort = HTONS((short)payloadLength);
+        memcpy(writeBufferPos, &payloadLengthShort, sizeof(payloadLengthShort));
+        writeBufferPos += sizeof(payloadLengthShort);
+    }
+
+    memcpy(writeBufferPos, payload, payloadLength);
+    writeBufferPos += payloadLength;
+
+    return writeBufferPos - writeBuffer;
 }
 
 #define SEND_WEBSOCKET_FRAME(s, opcode, payload, payloadLength) do { \
     char writeBuffer[1024]; \
-    prepare_websocket_frame(s, writeBuffer, opcode, payload, payloadLength); \
-    PSOCK_SEND(&s->sout, writeBuffer, WEBSOCKET_HEADER_SIZE + payloadLength); \
+    size_t writeBufferLength = prepare_websocket_frame(s, writeBuffer, opcode, payload, payloadLength); \
+    PSOCK_SEND(&s->sout, writeBuffer, writeBufferLength); \
 } while(0);
+/*---------------------------------------------------------------------------*/
+static PT_THREAD(send_response_buffer(struct httpd_state *s))
+{
+    PSOCK_BEGIN(&s->sout);
 
+    size_t len = strlen(s->websocket.responseBuffer);
+
+    if (len > 0)
+    {
+        //DEBUG_PRINTF("Sending response buffer: %s", s->websocket.responseBuffer);
+        SEND_WEBSOCKET_FRAME(s, 1, s->websocket.responseBuffer, len);
+    }
+
+    PSOCK_END(&s->sout);
+}
+/*---------------------------------------------------------------------------*/
+char const* get_query_string();
+static void send_status_response(struct httpd_state *s)
+{
+    s->websocket.sendStatusResponse = 0;
+
+    char const* response = get_query_string();
+    //DEBUG_PRINTF("Sending status response: %s", response);
+    strcat(s->websocket.responseBuffer, response);
+}
+/*---------------------------------------------------------------------------*/
+static void send_websocket_command_response(struct httpd_state *s)
+{
+    s->strbuf = fifo_pop(s->fifo);
+    if (s->strbuf != NULL) {
+        // send it
+        //DEBUG_PRINTF("Sending response: %s", s->strbuf);
+        strcat(s->websocket.responseBuffer, s->strbuf);
+        // free the strdup
+        free(s->strbuf);
+    }
+}
 /*---------------------------------------------------------------------------*/
 static PT_THREAD(send_command_response(struct httpd_state *s))
 {
@@ -278,7 +340,7 @@ static PT_THREAD(send_command_response(struct httpd_state *s))
             // TODO send as much as we can in one packet
             if (s->websocket.stage == Established)
             {
-                SEND_WEBSOCKET_FRAME(s, 1, s->strbuf, strlen(s->strbuf));
+                strcat(s->websocket.responseBuffer, s->strbuf);
             }
             else
             {
@@ -286,6 +348,7 @@ static PT_THREAD(send_command_response(struct httpd_state *s))
             }
             // free the strdup
             free(s->strbuf);
+            break;
         }else if(--s->command_count <= 0) {
             // when all commands have completed exit
             break;
@@ -462,8 +525,18 @@ PT_THREAD(handle_websocket_frame(struct httpd_state *s))
             s->inputbuf[s->websocket.readBufferPos + s->websocket.readPayloadLength - 1] = '\0';
         }
 
-        network_add_command(&s->inputbuf[s->websocket.readBufferPos], s->pstream);
-        s->command_count++;
+        //printf("GOT INPUT: %s\n", &s->inputbuf[s->websocket.readBufferPos]);
+
+        if (strcmp(&s->inputbuf[s->websocket.readBufferPos], "?") == 0)
+        {
+            //printf("\tGOT STATUS QUERY\n");
+            s->websocket.sendStatusResponse = 1;
+        }
+        else
+        {
+            network_add_command(&s->inputbuf[s->websocket.readBufferPos], s->pstream);
+            s->command_count++;
+        }
     }
 
     PSOCK_END(&s->sin);
@@ -485,6 +558,7 @@ PT_THREAD(handle_output(struct httpd_state *s))
         PSOCK_SEND_STR(&s->sout, "\r\n\r\n");
 
         s->websocket.stage = Established;
+        s->websocket.sendStatusResponse = 0;
         s->state = STATE_WEBSOCKETS;
         s->command_count = 0;
 
@@ -495,10 +569,19 @@ PT_THREAD(handle_output(struct httpd_state *s))
     }
     else if (s->websocket.stage == Established)
     {
-        if (fifo_size(s->fifo) > 0)
+        s->websocket.responseBuffer[0] = '\0';
+
+        if (s->websocket.sendStatusResponse)
         {
-            PT_WAIT_THREAD(&s->outputpt, send_command_response(s));
+            send_status_response(s);
         }
+
+        while (fifo_size(s->fifo) > 0)
+        {
+            send_websocket_command_response(s);
+        }
+
+        PT_WAIT_THREAD(&s->outputpt, send_response_buffer(s));
     }
     else if (s->method == OPTIONS) {
         PT_WAIT_THREAD(&s->outputpt, send_headers(s, http_header_preflight));
@@ -655,7 +738,7 @@ PT_THREAD(handle_input(struct httpd_state *s))
 
 	if (s->websocket.stage == Established)
 	{
-        if (PSOCK_NEWDATA(&s->sin))
+        while (PSOCK_NEWDATA(&s->sin))
         {
             PT_WAIT_THREAD(&s->inputpt, handle_websocket_frame(s));
         }
