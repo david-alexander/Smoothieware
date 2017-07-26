@@ -101,6 +101,10 @@
 
 static struct httpd_state* all_websocket_connections[1024] = { 0 };
 
+/*---------------------------------------------------------------------------*/
+static int send_websocket_command_response(struct httpd_state *s, char const* str);
+/*---------------------------------------------------------------------------*/
+
 // this callback gets the results of a command, line by line. need to check if
 // we need to stall the upstream sender return 0 if stalled 1 if ok to keep
 // providing more -1 if the connection has closed or is not in output state.
@@ -117,21 +121,12 @@ static int command_result(const char *str, void *state)
         return -1;
     }
 
-    if (str == NULL) {
-        DEBUG_PRINTF("End of command (%p)\n", state);
-        fifo_push(s->fifo, NULL);
-
-    } else {
-        if (fifo_size(s->fifo) < 100) {
-            DEBUG_PRINTF("Got command result (%p): %s", state, str);
-            fifo_push(s->fifo, strdup(str));
-            return 1;
-        } else {
-            DEBUG_PRINTF("command result fifo is full (%p)\n", state);
-            return 0;
-        }
+    if (send_websocket_command_response(s, str))
+    {
+        return 1;
     }
-    return 1;
+
+    return 0;
 }
 
 static void create_callback_stream(struct httpd_state *s)
@@ -285,21 +280,51 @@ static size_t prepare_websocket_frame(struct httpd_state *s, char* writeBuffer, 
 }
 
 #define SEND_WEBSOCKET_FRAME(s, opcode, payload, payloadLength) do { \
-    char writeBuffer[1024]; \
-    size_t writeBufferLength = prepare_websocket_frame(s, writeBuffer, opcode, payload, payloadLength); \
+    static char writeBuffer[1024]; \
+    static size_t writeBufferLength = 0; \
+    writeBufferLength = prepare_websocket_frame(s, writeBuffer, opcode, payload, payloadLength); \
     PSOCK_SEND(&s->sout, writeBuffer, writeBufferLength); \
 } while(0);
+
+/*---------------------------------------------------------------------------*/
+
+static int send_websocket_command_response(struct httpd_state *s, char const* str)
+{
+    if (str) {
+        int len = strlen(str);
+
+        if ((s->websocket.responseBufferPosition + len + 1) > sizeof(s->websocket.responseBuffer))
+        {
+            return 0;
+        }
+
+        memcpy(s->websocket.responseBuffer + s->websocket.responseBufferPosition, str, len + 1);
+        s->websocket.responseBufferPosition += len;
+    }
+
+    return 1;
+}
+
 /*---------------------------------------------------------------------------*/
 static PT_THREAD(send_response_buffer(struct httpd_state *s))
 {
     PSOCK_BEGIN(&s->sout);
 
-    size_t len = strlen(s->websocket.responseBuffer);
-
-    if (len > 0)
+    while (1)
     {
-        //DEBUG_PRINTF("Sending response buffer: %s", s->websocket.responseBuffer);
-        SEND_WEBSOCKET_FRAME(s, 1, s->websocket.responseBuffer, len);
+
+        PSOCK_WAIT_UNTIL(&s->sout, s->websocket.responseBufferPosition > 0);
+
+        static size_t len = 0;
+        len = strlen(s->websocket.responseBuffer);
+
+        static char responseToSend[sizeof(s->websocket.responseBuffer)];
+        memcpy(responseToSend, s->websocket.responseBuffer, len + 1);
+
+        s->websocket.responseBuffer[0] = '\0';
+        s->websocket.responseBufferPosition = 0;
+
+        SEND_WEBSOCKET_FRAME(s, 1, responseToSend, len);
     }
 
     PSOCK_END(&s->sout);
@@ -308,22 +333,14 @@ static PT_THREAD(send_response_buffer(struct httpd_state *s))
 char const* get_query_string();
 static void send_status_response(struct httpd_state *s)
 {
-    s->websocket.sendStatusResponse = 0;
+    if (s->websocket.responseBufferPosition == 0)
+    {
+        char const* response = get_query_string();
 
-    char const* response = get_query_string();
-    //DEBUG_PRINTF("Sending status response: %s", response);
-    strcat(s->websocket.responseBuffer, response);
-}
-/*---------------------------------------------------------------------------*/
-static void send_websocket_command_response(struct httpd_state *s)
-{
-    s->strbuf = fifo_pop(s->fifo);
-    if (s->strbuf != NULL) {
-        // send it
-        //DEBUG_PRINTF("Sending response: %s", s->strbuf);
-        strcat(s->websocket.responseBuffer, s->strbuf);
-        // free the strdup
-        free(s->strbuf);
+        if (send_websocket_command_response(s, response))
+        {
+            s->websocket.sendStatusResponse = 0;
+        }
     }
 }
 /*---------------------------------------------------------------------------*/
@@ -505,7 +522,7 @@ PT_THREAD(handle_websocket_frame(struct httpd_state *s))
 
     if (s->websocket.readHeader.opcode == 0x9) // ping
     {
-        SEND_WEBSOCKET_FRAME(s, 0xA /* pong */, &s->inputbuf[s->websocket.readBufferPos], s->websocket.readPayloadLength);
+        //SEND_WEBSOCKET_FRAME(s, 0xA /* pong */, &s->inputbuf[s->websocket.readBufferPos], s->websocket.readPayloadLength);
     }
     else if (s->websocket.readHeader.opcode == 0x8) // connection close
     {
@@ -535,6 +552,9 @@ PT_THREAD(handle_websocket_frame(struct httpd_state *s))
         else
         {
             network_add_command(&s->inputbuf[s->websocket.readBufferPos], s->pstream);
+
+            //do_on_console_line_received(&s->inputbuf[s->websocket.readBufferPos], s->pstream);
+
             s->command_count++;
         }
     }
@@ -569,19 +589,7 @@ PT_THREAD(handle_output(struct httpd_state *s))
     }
     else if (s->websocket.stage == Established)
     {
-        s->websocket.responseBuffer[0] = '\0';
 
-        if (s->websocket.sendStatusResponse)
-        {
-            send_status_response(s);
-        }
-
-        while (fifo_size(s->fifo) > 0)
-        {
-            send_websocket_command_response(s);
-        }
-
-        PT_WAIT_THREAD(&s->outputpt, send_response_buffer(s));
     }
     else if (s->method == OPTIONS) {
         PT_WAIT_THREAD(&s->outputpt, send_headers(s, http_header_preflight));
@@ -902,7 +910,21 @@ handle_connection(struct httpd_state *s)
         handle_input(s);
     }
     if (s->state == STATE_OUTPUT || s->state == STATE_WEBSOCKETS) {
-        handle_output(s);
+        if (s->websocket.stage == Established)
+        {
+            if (s->websocket.sendStatusResponse)
+            {
+                send_status_response(s);
+            }
+
+            network_clear_command_queue();
+
+            send_response_buffer(s);
+        }
+        else
+        {
+            handle_output(s);
+        }
     }
 }
 /*---------------------------------------------------------------------------*/
@@ -936,6 +958,8 @@ httpd_appcall(void)
         s->fifo = NULL;
         s->pstream = NULL;
         s->websocket.stage = Inactive;
+        s->websocket.responseBuffer[0] = '\0';
+        s->websocket.responseBufferPosition = 0;
     }
 
     if (s == NULL) {

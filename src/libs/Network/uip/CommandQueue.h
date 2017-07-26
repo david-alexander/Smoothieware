@@ -27,6 +27,7 @@ private:
 
 #else
 
+extern void network_clear_command_queue();
 extern int network_add_command(const char * cmd, void *pstream);
 #endif
 

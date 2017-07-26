@@ -62,6 +62,7 @@ struct websockets_state {
   char readMaskKey[4];
   char sendStatusResponse;
   char responseBuffer[1024];
+  uint32_t responseBufferPosition;
 };
 
 struct httpd_state {

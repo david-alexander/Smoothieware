@@ -263,6 +263,12 @@ void Network::on_idle(void *argument)
 {
     if (!ethernet->isUp()) return;
 
+    static bool isInIdleHandler = false;
+
+    if (isInIdleHandler) return;
+
+    isInIdleHandler = true;
+
     int len= sizeof(uip_buf); // set maximum size
     if (ethernet->_receive_frame(uip_buf, &len)) {
         uip_len = len;
@@ -318,6 +324,8 @@ void Network::on_idle(void *argument)
             uip_arp_timer();
         }
     }
+
+    isInIdleHandler = false;
 }
 
 void Network::setup_servers()
@@ -467,7 +475,8 @@ extern "C" void app_select_appcall_udp(void)
 {
     switch (uip_udp_conn->lport) {
         case HTONS(DHCPC_CLIENT_PORT):
-            if (theNetwork->use_dhcp) dhcpc_appcall();
+        case HTONS(DHCPC_SERVER_PORT):
+            if (theNetwork->use_dhcp || theNetwork->use_dhcp_server) dhcpc_appcall();
             break;
 
         case HTONS(MDNS_PORT):
@@ -534,7 +543,7 @@ void Network::handlePacket(void)
             }
 
         } else {
-            printf("Unknown ethernet packet type %04X\n", htons(BUF->type));
+            //printf("Unknown ethernet packet type %04X\n", htons(BUF->type));
             uip_len = 0;
         }
     }

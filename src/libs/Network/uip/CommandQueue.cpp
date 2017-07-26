@@ -25,6 +25,11 @@ CommandQueue* CommandQueue::getInstance()
 }
 
 extern "C" {
+    void network_clear_command_queue()
+    {
+        while (command_queue_instance->pop());
+    }
+
     int network_add_command(const char *cmd, void *pstream)
     {
         return command_queue_instance->add(cmd, (StreamOutput*)pstream);
