@@ -17,7 +17,7 @@ usbdesc_device USB::device = {
 	SUBCLASS_IAD,	    // .bDeviceSubClass
 	PROTOCOL_IAD,		// .bDeviceProtocol
 	64,					// .bMaxPacketSize0
-	0x1d50,				// .idVendor
+	0x2341,				// .idVendor
 	0x6015,				// .idProduct
 	0x0100,				// .bcdDevice
 	0,					// .iManufacturer
@@ -32,7 +32,7 @@ static usbdesc_language lang = {
 	{ SL_USENGLISH, },
 };
 
-static usbstring_const_init(manufacturer, "Uberclock");
+static usbstring_const_init(manufacturer, "Inventables");
 
 static usbstring_const_init(product, "Smoothieboard");
 
