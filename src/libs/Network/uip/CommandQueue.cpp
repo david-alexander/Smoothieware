@@ -7,6 +7,7 @@
 #include "Kernel.h"
 #include "libs/SerialMessage.h"
 #include "CallbackStream.h"
+#include "Network.h"
 
 static CommandQueue *command_queue_instance;
 CommandQueue *CommandQueue::instance = NULL;
@@ -25,14 +26,25 @@ CommandQueue* CommandQueue::getInstance()
 }
 
 extern "C" {
-    void network_clear_command_queue()
+    void network_handle_console_line(char const* str, void* pstream)
     {
-        while (command_queue_instance->pop());
+        struct SerialMessage message;
+        message.message = str;
+        message.stream = (StreamOutput*)pstream;
+
+        THEKERNEL->call_event(ON_CONSOLE_LINE_RECEIVED, &message );
+    }
+
+    void network_pump_command_queue()
+    {
+        //command_queue_instance->pop();
     }
 
     int network_add_command(const char *cmd, void *pstream)
     {
-        return command_queue_instance->add(cmd, (StreamOutput*)pstream);
+        int result = command_queue_instance->add(cmd, (StreamOutput*)pstream);
+        appcall_on_next_idle = true;
+        return result;
     }
 }
 

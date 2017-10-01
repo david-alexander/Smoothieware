@@ -14,9 +14,29 @@ CallbackStream::CallbackStream(cb_t cb, void *u)
     use_count= 0;
 }
 
+CallbackStream::CallbackStream(cb_t cb, getc_cb_t getc_cb, void *u)
+{
+    DEBUG_PRINTF("Callbackstream ctor: %p\n", this);
+    callback= cb;
+    getc_callback = getc_cb;
+    user= u;
+    closed= false;
+    use_count= 0;
+}
+
 CallbackStream::~CallbackStream()
 {
     DEBUG_PRINTF("Callbackstream dtor: %p\n", this);
+}
+
+int CallbackStream::_getc(void)
+{
+    if (this->getc_callback != nullptr)
+    {
+        return this->getc_callback(this->user);
+    }
+
+    return -1;
 }
 
 int CallbackStream::puts(const char *s)
@@ -57,13 +77,18 @@ void CallbackStream::dec()
     if(closed && use_count <= 0) delete this;
 }
 
-extern "C" void *new_callback_stream(cb_t cb, void *u)
+extern "C" void *new_callback_stream(cb_t cb, getc_cb_t getc_cb, void *u)
 {
-    return new CallbackStream(cb, u);
+    return new CallbackStream(cb, getc_cb, u);
 }
 
 extern "C" void delete_callback_stream(void *p)
 {
     // we don't delete it in case it is still on the command queue
     ((CallbackStream*)p)->mark_closed();
+}
+
+extern "C" void call_idle()
+{
+    THEKERNEL->call_event(ON_IDLE);
 }

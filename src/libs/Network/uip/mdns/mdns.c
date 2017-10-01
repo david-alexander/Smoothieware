@@ -205,6 +205,11 @@ static void handle_msg()
                 //break;
             }
 
+            s.send_response = 1;
+            s.send_ptr_response = 1;
+            s.send_srv_response = 1;
+            s.send_txt_response = 1;
+
             pos += 4;
         }
     }

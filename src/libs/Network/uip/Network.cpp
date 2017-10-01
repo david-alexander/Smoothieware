@@ -54,6 +54,8 @@ extern "C" void uip_log(char *m)
 
 static Network* theNetwork;
 
+bool appcall_on_next_idle = false;
+
 Network::Network()
 {
     theNetwork= this;
@@ -204,7 +206,7 @@ void Network::on_module_loaded()
         }
     }
 
-    s = THEKERNEL->config->value( network_checksum, network_srv_hostname_checksum )->as_string();
+    s = THEKERNEL->config->value( network_checksum, network_srv_hostname_checksum )->by_default("_vertigocnc._tcp.local")->as_string();
     if (!s.empty()) {
         if(parse_hostname(s)){
             srv_hostname = new char [s.length() + 1];
@@ -276,7 +278,8 @@ void Network::on_idle(void *argument)
 
     } else {
 
-        if (timer_expired(&periodic_timer)) { /* no packet but periodic_timer time out (0.1s)*/
+        if (appcall_on_next_idle || timer_expired(&periodic_timer)) { /* no packet but periodic_timer time out (0.1s)*/
+            appcall_on_next_idle = false;
             timer_reset(&periodic_timer);
 
             for (int i = 0; i < UIP_CONNS; i++) {
@@ -414,6 +417,7 @@ void Network::init(void)
 
         if (use_dhcp_server && *(uint32_t*)clientipaddr != 0x0)
         {
+            printf("DHCP Client IP: %d.%d.%d.%d\n", clientipaddr[0], clientipaddr[1], clientipaddr[2], clientipaddr[3]);
             dhcpc_init(mac_address, sizeof(mac_address), hostname, *(uint32_t*)clientipaddr);
         }
     }else{

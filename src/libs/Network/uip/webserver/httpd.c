@@ -99,7 +99,11 @@
 #define DEBUG_PRINTF printf
 //#define DEBUG_PRINTF(...)
 
-static struct httpd_state* all_websocket_connections[1024] = { 0 };
+// uint32_t htonl(uint32_t v);
+#define htonl(a) ((((a) >> 24) & 0x000000FF) | (((a) >> 8) & 0x0000FF00) | (((a) << 8) & 0x00FF0000) | (((a) << 24) & 0xFF000000))
+#define ntohl(a) htonl(a)
+
+#define htonll(x) ((1==htonl(1)) ? (x) : ((uint64_t)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))
 
 /*---------------------------------------------------------------------------*/
 static int send_websocket_command_response(struct httpd_state *s, char const* str);
@@ -129,12 +133,44 @@ static int command_result(const char *str, void *state)
     return 0;
 }
 
+static int command_getc(void *state)
+{
+    int i; // TEMP
+
+    struct httpd_state *s = (struct httpd_state *)state;
+
+    if (s == NULL)
+    {
+        return -1;
+    }
+
+    s->websocket.is_in_getc = 1;
+
+    while (s->websocket.receiveBufferPosition == 0)
+    {
+        call_idle();
+    }
+
+    s->websocket.is_in_getc = 0;
+
+    if (s->websocket.receiveBufferPosition > 0)
+    {
+        char c = s->websocket.receiveBuffer[0];
+        memmove(s->websocket.receiveBuffer, s->websocket.receiveBuffer + 1, s->websocket.receiveBufferPosition - 1);
+        s->websocket.receiveBufferPosition--;
+        printf("GETC RETURNING %c (%d)\n", c, c);
+        return c;
+    }
+
+    return -1;
+}
+
 static void create_callback_stream(struct httpd_state *s)
 {
     // need to create a callback stream here, but do one per connection pass
     // the state to the callback, also create the fifo for the command results
     s->fifo = new_fifo();
-    s->pstream = new_callback_stream(command_result, s);
+    s->pstream = new_callback_stream(command_result, command_getc, s);
 }
 
 // Used to save files to SDCARD during upload
@@ -201,26 +237,10 @@ static int fs_open(struct httpd_state *s)
 
 static void add_websocket_connection(struct httpd_state* s)
 {
-    unsigned int i;
-    for (i = 0; all_websocket_connections[i] != NULL; i++);
-    all_websocket_connections[i] = s;
-    all_websocket_connections[i + 1] = NULL;
 }
 
 static void remove_websocket_connection(struct httpd_state* s)
 {
-    unsigned int i;
-    for (i = 0; all_websocket_connections[i] != NULL; i++)
-    {
-        if (all_websocket_connections[i] == s)
-        {
-            break;
-        }
-    }
-    for (; all_websocket_connections[i] != NULL; i++)
-    {
-        all_websocket_connections[i] = all_websocket_connections[i+1];
-    }
 }
 
 /*---------------------------------------------------------------------------*/
@@ -250,12 +270,18 @@ static size_t prepare_websocket_frame(struct httpd_state *s, char* writeBuffer, 
 
     if (payloadLength < 126)
     {
+        payloadLengthType = 0;
         header.payloadLength = payloadLength;
+    }
+    else if (payloadLength < 65536)
+    {
+        payloadLengthType = 1;
+        header.payloadLength = 126;
     }
     else
     {
-        payloadLengthType = 1;
-        header.payloadLength = 126; // TODO: Handle payload lengths longer than 2^16.
+        payloadLengthType = 2;
+        header.payloadLength = 127;
     }
 
     char headerBytes[WEBSOCKET_HEADER_SIZE];
@@ -271,6 +297,12 @@ static size_t prepare_websocket_frame(struct httpd_state *s, char* writeBuffer, 
         uint16_t payloadLengthShort = HTONS((short)payloadLength);
         memcpy(writeBufferPos, &payloadLengthShort, sizeof(payloadLengthShort));
         writeBufferPos += sizeof(payloadLengthShort);
+    }
+    else if (payloadLengthType == 2)
+    {
+        uint64_t payloadLengthLongLong = htonll(payloadLength);
+        memcpy(writeBufferPos, &payloadLengthLongLong, sizeof(payloadLengthLongLong));
+        writeBufferPos += sizeof(payloadLengthLongLong);
     }
 
     memcpy(writeBufferPos, payload, payloadLength);
@@ -537,25 +569,42 @@ PT_THREAD(handle_websocket_frame(struct httpd_state *s))
     {
         s->inputbuf[s->websocket.readBufferPos + s->websocket.readPayloadLength] = '\0';
 
-        if (s->inputbuf[s->websocket.readBufferPos + s->websocket.readPayloadLength - 1] == '\n')
+        if (s->websocket.is_in_getc)
         {
-            s->inputbuf[s->websocket.readBufferPos + s->websocket.readPayloadLength - 1] = '\0';
-        }
+            memcpy(s->websocket.receiveBuffer + s->websocket.receiveBufferPosition, &s->inputbuf[s->websocket.readBufferPos], s->websocket.readPayloadLength + 1);
+            s->websocket.receiveBufferPosition += s->websocket.readPayloadLength;
 
-        //printf("GOT INPUT: %s\n", &s->inputbuf[s->websocket.readBufferPos]);
-
-        if (strcmp(&s->inputbuf[s->websocket.readBufferPos], "?") == 0)
-        {
-            //printf("\tGOT STATUS QUERY\n");
-            s->websocket.sendStatusResponse = 1;
+            printf("PAYLOAD LENGTH = %d\n", s->websocket.readPayloadLength);
+            printf("START OF RECEIVE BUFFER\n");
+            for (i = 0; i < s->websocket.receiveBufferPosition; i++)
+            {
+                printf("\t%c (%d)\n", s->websocket.receiveBuffer[i], s->websocket.receiveBuffer[i]);
+            }
+            printf("END OF RECEIVE BUFFER\n");
         }
         else
         {
-            network_add_command(&s->inputbuf[s->websocket.readBufferPos], s->pstream);
 
-            //do_on_console_line_received(&s->inputbuf[s->websocket.readBufferPos], s->pstream);
+            if (s->inputbuf[s->websocket.readBufferPos + s->websocket.readPayloadLength - 1] == '\n')
+            {
+                s->inputbuf[s->websocket.readBufferPos + s->websocket.readPayloadLength - 1] = '\0';
+            }
 
-            s->command_count++;
+            //printf("GOT INPUT: %s\n", &s->inputbuf[s->websocket.readBufferPos]);
+
+            if (strcmp(&s->inputbuf[s->websocket.readBufferPos], "?") == 0)
+            {
+                //printf("\tGOT STATUS QUERY\n");
+                s->websocket.sendStatusResponse = 1;
+            }
+            else
+            {
+                network_add_command(&s->inputbuf[s->websocket.readBufferPos], s->pstream);
+
+                //do_on_console_line_received(&s->inputbuf[s->websocket.readBufferPos], s->pstream);
+
+                s->command_count++;
+            }
         }
     }
 
@@ -917,7 +966,7 @@ handle_connection(struct httpd_state *s)
                 send_status_response(s);
             }
 
-            network_clear_command_queue();
+            network_pump_command_queue();
 
             send_response_buffer(s);
         }
@@ -960,6 +1009,9 @@ httpd_appcall(void)
         s->websocket.stage = Inactive;
         s->websocket.responseBuffer[0] = '\0';
         s->websocket.responseBufferPosition = 0;
+        s->websocket.receiveBuffer[0] = '\0';
+        s->websocket.receiveBufferPosition = 0;
+        s->websocket.is_in_getc = 0;
     }
 
     if (s == NULL) {
@@ -985,6 +1037,8 @@ httpd_appcall(void)
     if (uip_closed() || uip_aborted() || uip_timedout()) {
         if (s->websocket.stage == Established)
         {
+            DEBUG_PRINTF("Closing websocket connection: %d (closed=%d, aborted=%d, timedout=%d)\n", HTONS(uip_conn->rport), uip_closed(), uip_aborted(), uip_timedout());
+
             remove_websocket_connection(s);
         }
         DEBUG_PRINTF("Closing connection: %d\n", HTONS(uip_conn->rport));

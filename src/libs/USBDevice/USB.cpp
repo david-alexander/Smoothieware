@@ -17,7 +17,7 @@ usbdesc_device USB::device = {
 	SUBCLASS_IAD,	    // .bDeviceSubClass
 	PROTOCOL_IAD,		// .bDeviceProtocol
 	64,					// .bMaxPacketSize0
-	0x2341,				// .idVendor
+	0x1D50,				// .idVendor
 	0x6015,				// .idProduct
 	0x0100,				// .bcdDevice
 	0,					// .iManufacturer

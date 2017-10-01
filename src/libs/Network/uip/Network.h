@@ -8,6 +8,8 @@
 class Sftpd;
 class CommandQueue;
 
+extern bool appcall_on_next_idle;
+
 class Network : public Module
 {
 public:
@@ -19,7 +21,7 @@ public:
     void on_main_loop(void* argument);
     void on_get_public_data(void* argument);
     void dhcpc_configured(uint32_t ipaddr, uint32_t ipmask, uint32_t ipgw);
-    void tapdev_send(void *pPacket, unsigned int size);
+    void tapdev_send(void *pPacket, unsigned int size);\
 
     // accessed from C
     Sftpd *sftpd;

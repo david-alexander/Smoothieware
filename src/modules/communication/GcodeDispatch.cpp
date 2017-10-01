@@ -43,6 +43,8 @@ GcodeDispatch::GcodeDispatch()
     uploading = false;
     currentline = -1;
     modal_group_1= 0;
+    current_play_id = 0;
+    current_play_nextline = 0;
 }
 
 // Called when the module has just been loaded
@@ -168,6 +170,35 @@ try_again:
                             }
                             delete gcode;
                             continue;
+                        }
+                    }
+
+                    uint32_t play_id = gcode->get_uint('@');
+                    uint32_t play_line = gcode->get_uint('#');
+
+                    if (play_id != current_play_id)
+                    {
+                        current_play_id = play_id;
+                        current_play_nextline = play_line;
+                    }
+
+                    if (play_id != 0 && play_line != 0)
+                    {
+                        if (play_line > current_play_nextline)
+                        {
+                            //Request resend
+                            new_message.stream->printf("rs N%d\r\n", nextline);
+                            continue;
+                        }
+                        else if (play_line < current_play_nextline)
+                        {
+                            //Duplicate - ignore
+                            new_message.stream->printf("ok\r\n");
+                            continue;
+                        }
+                        else
+                        {
+                            current_play_nextline = play_line + 1;
                         }
                     }
 

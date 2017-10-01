@@ -15,12 +15,16 @@
 #include "StreamOutputPool.h"
 #include "PwmOut.h"
 
-#define spindle_checksum                    CHECKSUM("spindle")
-#define spindle_max_rpm_checksum            CHECKSUM("max_rpm")
-#define spindle_min_rpm_checksum            CHECKSUM("min_rpm")
-#define spindle_pwm_pin_checksum            CHECKSUM("pwm_pin")
-#define spindle_pwm_period_checksum         CHECKSUM("pwm_period")
-#define spindle_switch_on_pin_checksum      CHECKSUM("switch_on_pin")
+#include <math.h>
+
+#define spindle_checksum                        CHECKSUM("spindle")
+#define spindle_max_rpm_checksum                CHECKSUM("max_rpm")
+#define spindle_min_rpm_checksum                CHECKSUM("min_rpm")
+#define spindle_pwm_pin_checksum                CHECKSUM("pwm_pin")
+#define spindle_pwm_period_checksum             CHECKSUM("pwm_period")
+#define spindle_adjustment_log_factor_checksum  CHECKSUM("adjustment_log_factor")
+#define spindle_adjustment_offset_checksum      CHECKSUM("adjustment_offset")
+#define spindle_switch_on_pin_checksum          CHECKSUM("switch_on_pin")
 
 void AnalogSpindleControl::on_module_loaded()
 {
@@ -29,6 +33,8 @@ void AnalogSpindleControl::on_module_loaded()
     target_rpm = 0;
     min_rpm = THEKERNEL->config->value(spindle_checksum, spindle_min_rpm_checksum)->by_default(100)->as_int();
     max_rpm = THEKERNEL->config->value(spindle_checksum, spindle_max_rpm_checksum)->by_default(5000)->as_int();
+    adjustment_log_factor = THEKERNEL->config->value(spindle_checksum, spindle_adjustment_log_factor_checksum)->by_default(2.0f)->as_number();
+    adjustment_offset = THEKERNEL->config->value(spindle_checksum, spindle_adjustment_offset_checksum)->by_default(0)->as_int();
 
     // Get the pin for hardware pwm
     {
@@ -87,6 +93,8 @@ void AnalogSpindleControl::turn_off()
 
 void AnalogSpindleControl::set_speed(int rpm) 
 {
+    rpm += adjustment_offset;
+
     // limit the requested RPM value
     if(rpm < 0) {
         target_rpm = 0;
@@ -98,8 +106,14 @@ void AnalogSpindleControl::set_speed(int rpm)
         target_rpm = rpm;
     }
     // calculate the duty cycle and update the PWM
-    update_pwm(1.0f / max_rpm * target_rpm);
-
+    if (target_rpm == 0)
+    {
+        update_pwm(0);
+    }
+    else
+    {
+        update_pwm(pow(adjustment_log_factor, log2((float)target_rpm / (float)max_rpm)));
+    }
 }
 
 
